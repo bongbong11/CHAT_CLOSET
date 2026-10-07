@@ -1,23 +1,27 @@
 import {getContext} from '../../../extensions.js';
 import {ConnectionManagerRequestService} from '../../shared.js';
 import * as worldInfo from '../../../world-info.js';
-import {Store,Engine,KEY,normalizeProfile,clone,outfitText,prefixKeys,outfitInjection,savedOutfitForMessages} from './core.js';
+import {Store,Engine,normalizeProfile,clone,outfitText,prefixKeys,outfitInjection,savedOutfitForMessages} from './core.js';
 import {ANALYSIS,SCENE,candidates} from './prompts.js';
 import {createHost,injectPayload} from './host.js';
 import {createUI} from './ui.js';
 import {translateReport} from './profile-report.js';
 import {installOutputGuard,sanitizeSavedOutputs} from './output-guard.js';
+import {ServerStorage} from './server-storage.js';
 
 const host=createHost(getContext,ConnectionManagerRequestService,worldInfo);
 const outputGuard=installOutputGuard(getContext);
-let store;try{store=new Store(localStorage);}catch(error){globalThis.toastr?.error(error.message,'끼끼의상실');const c=confirm('끼끼의상실 저장 데이터가 손상되었습니다. 이 확장의 데이터만 초기화할까요?');if(!c)throw error;localStorage.removeItem(KEY);store=new Store(localStorage);}
+let legacyStorage;try{legacyStorage=localStorage;}catch{}
+const storage=await new ServerStorage({headers:()=>getContext().getRequestHeaders(),legacy:legacyStorage}).init();
+const store=new Store(storage);
 const settings=()=>store.data.settings;
 const engine=new Engine(store,(system,data,signal)=>host.request(settings().profileId,system,data,signal,'scene'));
 let analysisController=null,revision=0,timer=null,prepared=null,pending=false,injectionError='',runningRead=null,readId=0,generating=false;
 const cancel=()=>{revision++;readId++;engine.cancel();analysisController?.abort();analysisController=null;runningRead=null;pending=false;prepared=null;clearTimeout(timer);ui.toast(false);};
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
-const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,settings:settings(),injectionError,pending};};
+const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,settings:settings(),injectionError,pending,storageStatus:storage.status,legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
+ await storage.pull();
  const v=current();if(!settings().enabled||!v||v.b.suspended||generating)return v?.b.current||null;
  if(v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('페르소나가 변경되었습니다. 새 브랜치를 만들거나 취향을 재분석하세요.');
  const messages=host.messages(chat),messageKey=prefixKeys(messages).at(-1)||'root';
@@ -28,11 +32,12 @@ async function read(chat=host.context().chat,force=false){
   try{
    if(!messages.length){engine.cancel();v.b.current=clone(v.b.base);v.b.extra=clone(v.b.baseExtra||{character:[],persona:[]});v.b.keys=[];v.b.history=[];v.b.outfits=[];store.save();return v.b.current;}
    return await engine.read(v.i.id,v.bid,messages,{force,gate:true,system:SCENE,candidates:candidates(Math.random,v.b.profiles),onRequest:()=>{pending=true;ui.toast(true);ui.refresh();}});
-  }finally{if(id===readId){runningRead=null;pending=false;ui.toast(false);ui.refresh();}}
+  }finally{try{await storage.flush();}finally{if(id===readId){runningRead=null;pending=false;ui.toast(false);ui.refresh();}}}
  })();
  runningRead={id,key,messageKey,promise};return promise;
 }
 async function analyze(selection){
+ await storage.pull();
  const targets=selection?.targets||[];
  if(targets.length!==1||!['character','persona'].includes(targets[0]))throw Error('분석할 대상을 먼저 선택하세요.');
  const who=targets[0],sources=selection.sources?.[who];
@@ -61,13 +66,14 @@ async function analyze(selection){
   const previous=v.b.analysisSources||{targets:[],selected:{}};
   v.b.analysisSources={targets:[...new Set([...previous.targets,who])],selected:{...previous.selected,[who]:(sources.lore||[]).map(x=>JSON.stringify([x.book,String(x.uid)]))}};
   v.b.personaKey=i.personaKey;v.b.suspended=false;v.b.checkpoints={};v.b.keys=[];
-  store.save();ui.refresh();return true;
+  store.save();await storage.flush();ui.refresh();return true;
  }finally{if(analysisController===controller){analysisController=null;ui.toast(false);}}
 }
-async function newBranch(mode,name,bid){cancel();const i=host.identity();if(!i)throw Error('캐릭터 채팅을 여세요.');if(!store.character(i.id))throw Error('취향 분석을 먼저 실행하세요.');let target=bid;if(mode==='existing'&&store.branch(i.id,bid)?.personaKey&&store.branch(i.id,bid).personaKey!==i.personaKey)throw Error('이 브랜치의 페르소나가 다릅니다. 새 브랜치를 만들어 분석하세요.');if(mode!=='existing')target=store.createBranch(i.id,name,mode==='copy'?current()?.bid:null);const targetBranch=store.branch(i.id,target);if(mode!=='existing'&&store.character(i.id).personaKey!==i.personaKey){delete targetBranch.profiles.persona;targetBranch.current.people.persona={nude:false,items:[]};targetBranch.base.people.persona={nude:false,items:[]};targetBranch.extra.persona=[];targetBranch.baseExtra.persona=[];}store.bind(i.id,target,i.chat);store.branch(i.id,target).personaKey=i.personaKey;store.save();ui.refresh();}
+async function newBranch(mode,name,bid){await storage.pull();cancel();const i=host.identity();if(!i)throw Error('캐릭터 채팅을 여세요.');if(!store.character(i.id))throw Error('취향 분석을 먼저 실행하세요.');let target=bid;if(mode==='existing'&&store.branch(i.id,bid)?.personaKey&&store.branch(i.id,bid).personaKey!==i.personaKey)throw Error('이 브랜치의 페르소나가 다릅니다. 새 브랜치를 만들어 분석하세요.');if(mode!=='existing')target=store.createBranch(i.id,name,mode==='copy'?current()?.bid:null);const targetBranch=store.branch(i.id,target);if(mode!=='existing'&&store.character(i.id).personaKey!==i.personaKey){delete targetBranch.profiles.persona;targetBranch.current.people.persona={nude:false,items:[]};targetBranch.base.people.persona={nude:false,items:[]};targetBranch.extra.persona=[];targetBranch.baseExtra.persona=[];}store.bind(i.id,target,i.chat);store.branch(i.id,target).personaKey=i.personaKey;store.save();ui.refresh();}
 const ui=createUI({base:new URL('.',import.meta.url),state,profiles:()=>host.profiles(),sheet:kind=>host.sheet(kind),lore:kind=>host.lore(kind),analyze,read:()=>read(undefined,true),newBranch,
+ flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),
  translateProfile:(profile,signal)=>translateReport(profile,(system,data,requestSignal)=>host.request(settings().profileId,system,data,requestSignal,'translation'),signal),
- updateSettings(patch){cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},
+ updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},
  saveProfiles(profiles){cancel();const v=current();if(!v)return;v.b.profiles=profiles;store.save();ui.refresh();},
  promote(){const v=current();if(!v)return;store.character(v.i.id).profiles=clone(v.b.profiles);store.save();},
  saveOutfit(people){cancel();const v=current();if(!v)return;v.b.current.people=people;v.b.base=clone(v.b.current);v.b.baseExtra=clone(v.b.extra);v.b.checkpoints={};v.b.keys=prefixKeys(host.messages());const last=v.b.keys.at(-1);if(last)v.b.checkpoints[last]={state:clone(v.b.current),extra:clone(v.b.extra),history:clone(v.b.history),outfits:clone(v.b.outfits)};store.save();ui.refresh();},
@@ -103,8 +109,17 @@ if(eventTypes.CHAT_CHANGED)eventSource.on(eventTypes.CHAT_CHANGED,()=>{generatin
 if(eventTypes.GENERATION_STOPPED)eventSource.on(eventTypes.GENERATION_STOPPED,()=>{generating=false;cancel();ui.toast(false);});
 if(eventTypes.CHAT_DELETED)eventSource.on(eventTypes.CHAT_DELETED,name=>{cancel();const i=host.identity();if(i)store.deleteChat(i.id,String(name).replace(/\.jsonl$/,''));ui.refresh();});
 if(eventTypes.CHAT_RENAMED)eventSource.on(eventTypes.CHAT_RENAMED,data=>{cancel();const id=String(data.avatarId||host.identity()?.id||'');const c=store.character(id);if(c){const old=String(data.oldFileName||'').replace(/\.jsonl$/,'');const fresh=String(data.newFileName||'').replace(/\.jsonl$/,'');for(const b of Object.values(c.branches))b.links=b.links.map(x=>x===old?fresh:x);store.save();}ui.refresh();});
-window.addEventListener('storage',e=>{if(e.key===KEY){cancel();try{store.data=store.load();ui.refresh();}catch(err){ui.error(err.message);}}});
+storage.onChange=()=>{cancel();store.invalidate();store.data=store.load();if(settings().enabled)outputGuard.install?.();else outputGuard.remove();ui.remoteRefresh();};
+storage.onStatus=()=>ui.storageStatus();
+let syncing=false;
+async function syncFromServer(){if(syncing||document.hidden)return;syncing=true;try{await storage.pull();}catch(error){storage.notify(error.message);}finally{syncing=false;}}
+window.addEventListener('focus',syncFromServer);
+window.addEventListener('pageshow',syncFromServer);
+document.addEventListener('visibilitychange',syncFromServer);
+setInterval(syncFromServer,15000);
+window.addEventListener('beforeunload',event=>{if(storage.job||storage.pending!==undefined){event.preventDefault();event.returnValue='';}});
 // Hide/unhide has no dedicated event in some ST versions. Compare actual context on the next generation.
 const chatElement=document.querySelector('#chat');
 if(chatElement)new MutationObserver(changes=>{if(changes.some(c=>c.type==='attributes'&&c.attributeName==='is_system'))schedule();}).observe(chatElement,{subtree:true,attributes:true,attributeFilter:['is_system']});
 ui.mount();
+if(storage.error)ui.error(storage.error.message);

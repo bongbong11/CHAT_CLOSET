@@ -66,7 +66,7 @@ export function createHost(context,service,worldInfo){
  async function request(profileId,system,data,signal,task='scene'){
   if(!profileId)throw Error('설정에서 연결 프로필을 선택하세요.');
   const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(toModelData(data))}];
-  const maxTokens=task==='analysis'?12000:task==='test'?300:6000;
+  const maxTokens=task==='analysis'||task==='translation'?12000:task==='test'?300:6000;
   let first;
   try{first=await send(profileId,messages,maxTokens,signal);}
   catch(error){
@@ -88,4 +88,4 @@ export function createHost(context,service,worldInfo){
 }
 
 // Operate on the outgoing request only: never rewrite stored chat messages or templates.
-export function injectPayload(payload,content,enabled=true){let found=0,malformed=false;const visit=(node)=>{if(typeof node==='string'){const r=replaceTags(node,content,{keep:enabled&&found===0});found+=r.found;malformed ||=r.malformed;return r.text;}if(Array.isArray(node))return node.map(visit);if(node&&typeof node==='object'){for(const key of ['prompt','messages','content','text'])if(Object.hasOwn(node,key))node[key]=visit(node[key]);}return node;};visit(payload);return {found,malformed};}
+export function injectPayload(payload,content,enabled=true){let found=0,malformed=false;const visit=(node)=>{if(typeof node==='string'){const r=replaceTags(node,content,{keep:enabled&&!!content&&found===0});found+=r.found;malformed ||=r.malformed;return r.text;}if(Array.isArray(node))return node.map(visit);if(node&&typeof node==='object'){for(const key of ['prompt','messages','content','text'])if(Object.hasOwn(node,key))node[key]=visit(node[key]);}return node;};visit(payload);return {found,malformed};}

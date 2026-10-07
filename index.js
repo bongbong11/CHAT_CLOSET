@@ -1,10 +1,11 @@
 import {getContext} from '../../../extensions.js';
 import {ConnectionManagerRequestService} from '../../shared.js';
 import * as worldInfo from '../../../world-info.js';
-import {Store,Engine,KEY,normalizeProfile,clone,outfitText,prefixKeys} from './core.js';
+import {Store,Engine,KEY,normalizeProfile,clone,outfitText,prefixKeys,outfitInjection,savedOutfitForMessages} from './core.js';
 import {ANALYSIS,SCENE,candidates} from './prompts.js';
 import {createHost,injectPayload} from './host.js';
 import {createUI} from './ui.js';
+import {translateReport} from './profile-report.js';
 import {installOutputGuard,sanitizeSavedOutputs} from './output-guard.js';
 
 const host=createHost(getContext,ConnectionManagerRequestService,worldInfo);
@@ -12,14 +13,25 @@ const outputGuard=installOutputGuard(getContext);
 let store;try{store=new Store(localStorage);}catch(error){globalThis.toastr?.error(error.message,'끼끼의상실');const c=confirm('끼끼의상실 저장 데이터가 손상되었습니다. 이 확장의 데이터만 초기화할까요?');if(!c)throw error;localStorage.removeItem(KEY);store=new Store(localStorage);}
 const settings=()=>store.data.settings;
 const engine=new Engine(store,(system,data,signal)=>host.request(settings().profileId,system,data,signal,'scene'));
-let analysisController=null,revision=0,timer=null,prepared=null,pending=false,injectionError='';
-const cancel=()=>{revision++;engine.cancel();analysisController?.abort();analysisController=null;prepared=null;clearTimeout(timer);};
+let analysisController=null,revision=0,timer=null,prepared=null,pending=false,injectionError='',runningRead=null,readId=0,generating=false;
+const cancel=()=>{revision++;readId++;engine.cancel();analysisController?.abort();analysisController=null;runningRead=null;pending=false;prepared=null;clearTimeout(timer);ui.toast(false);};
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
 const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,settings:settings(),injectionError,pending};};
-async function read(chat=host.context().chat,force=false){const v=current();if(!settings().enabled||!v||v.b.suspended)return null;if(v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('페르소나가 변경되었습니다. 새 브랜치를 만들거나 취향을 재분석하세요.');const messages=host.messages(chat);if(messages.length===0){v.b.current=clone(v.b.base);v.b.extra=clone(v.b.baseExtra||{character:[],persona:[]});v.b.keys=[];v.b.history=[];v.b.outfits=[];store.save();ui.refresh();return v.b.current;}
-// No model call while all present people are naked and the visible dialogue hasn't gained a transition cue.
-const known=Object.values(v.b.current.people).filter(p=>p.nude||p.items.length);const keys=prefixKeys(messages);if(!force&&known.length&&known.every(p=>p.nude)&&v.b.keys.every((k,i)=>keys[i]===k)){const added=messages.slice(v.b.keys.length).map(m=>m.content).join('\n');if(added&&!/입|옷|신발|출근|외출|나가|도착|다음|아침|저녁|시간|이동|wear|dress|leave|arriv|morning|next/i.test(added)){v.b.keys=keys;store.save();return v.b.current;}}
-pending=true;ui.toast(true);ui.refresh();try{return await engine.read(v.i.id,v.bid,messages,{force,system:SCENE,candidates:candidates(Math.random,v.b.profiles)});}finally{pending=false;ui.toast(false);ui.refresh();}}
+async function read(chat=host.context().chat,force=false){
+ const v=current();if(!settings().enabled||!v||v.b.suspended||generating)return v?.b.current||null;
+ if(v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('페르소나가 변경되었습니다. 새 브랜치를 만들거나 취향을 재분석하세요.');
+ const messages=host.messages(chat),messageKey=prefixKeys(messages).at(-1)||'root';
+ const key=JSON.stringify([v.i.id,v.bid,messageKey,settings().chatTurns,settings().profileId]);
+ if(runningRead?.key===key)return runningRead.promise;
+ const id=++readId;
+ const promise=(async()=>{
+  try{
+   if(!messages.length){engine.cancel();v.b.current=clone(v.b.base);v.b.extra=clone(v.b.baseExtra||{character:[],persona:[]});v.b.keys=[];v.b.history=[];v.b.outfits=[];store.save();return v.b.current;}
+   return await engine.read(v.i.id,v.bid,messages,{force,gate:true,system:SCENE,candidates:candidates(Math.random,v.b.profiles),onRequest:()=>{pending=true;ui.toast(true);ui.refresh();}});
+  }finally{if(id===readId){runningRead=null;pending=false;ui.toast(false);ui.refresh();}}
+ })();
+ runningRead={id,key,messageKey,promise};return promise;
+}
 async function analyze(selection){
  const targets=selection?.targets||[];
  if(targets.length!==1||!['character','persona'].includes(targets[0]))throw Error('분석할 대상을 먼저 선택하세요.');
@@ -54,6 +66,7 @@ async function analyze(selection){
 }
 async function newBranch(mode,name,bid){cancel();const i=host.identity();if(!i)throw Error('캐릭터 채팅을 여세요.');if(!store.character(i.id))throw Error('취향 분석을 먼저 실행하세요.');let target=bid;if(mode==='existing'&&store.branch(i.id,bid)?.personaKey&&store.branch(i.id,bid).personaKey!==i.personaKey)throw Error('이 브랜치의 페르소나가 다릅니다. 새 브랜치를 만들어 분석하세요.');if(mode!=='existing')target=store.createBranch(i.id,name,mode==='copy'?current()?.bid:null);const targetBranch=store.branch(i.id,target);if(mode!=='existing'&&store.character(i.id).personaKey!==i.personaKey){delete targetBranch.profiles.persona;targetBranch.current.people.persona={nude:false,items:[]};targetBranch.base.people.persona={nude:false,items:[]};targetBranch.extra.persona=[];targetBranch.baseExtra.persona=[];}store.bind(i.id,target,i.chat);store.branch(i.id,target).personaKey=i.personaKey;store.save();ui.refresh();}
 const ui=createUI({base:new URL('.',import.meta.url),state,profiles:()=>host.profiles(),sheet:kind=>host.sheet(kind),lore:kind=>host.lore(kind),analyze,read:()=>read(undefined,true),newBranch,
+ translateProfile:(profile,signal)=>translateReport(profile,(system,data,requestSignal)=>host.request(settings().profileId,system,data,requestSignal,'translation'),signal),
  updateSettings(patch){cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},
  saveProfiles(profiles){cancel();const v=current();if(!v)return;v.b.profiles=profiles;store.save();ui.refresh();},
  promote(){const v=current();if(!v)return;store.character(v.i.id).profiles=clone(v.b.profiles);store.save();},
@@ -61,14 +74,33 @@ const ui=createUI({base:new URL('.',import.meta.url),state,profiles:()=>host.pro
  async testConnection(){return host.request(settings().profileId,'Return only {"ok":true}.',{},new AbortController().signal,'test').then(x=>{if(x.ok!==true)throw Error('연결 확인 응답이 잘못되었습니다.');});},
  remove(kind,bid){cancel();const i=host.identity();if(kind==='all'){store.deleteAll();outputGuard.remove();}else if(i){if(kind==='chat')store.resetChat(i.id,i.chat);if(kind==='branch')store.deleteBranch(i.id,bid||current()?.bid);if(kind==='character')store.deleteCharacter(i.id);}ui.refresh();},
 });
-globalThis.kikkiClosetInterceptor=async(chat,_size,abort,type)=>{if(!settings().enabled||['quiet','impersonate'].includes(type))return;try{if(!outputGuard.safe())throw Error('출력 차단을 위해 실리를 업데이트하거나 기본 Regex 확장을 켜주세요.');const result=await read(chat);prepared=result?{revision,character:host.identity()?.id,chat:host.identity()?.chat,content:outfitText(result,settings().detail,settings().brands)}:null;}catch(error){prepared=null;if(error.name!=='AbortError'){ui.error(error.message);abort(true);}}};
+// Main RP generation never waits for, or asks for output from, the wardrobe reader.
+globalThis.kikkiClosetInterceptor=(_chat,_size,abort,type)=>{
+ prepared=null;if(!settings().enabled||['quiet','impersonate'].includes(type))return;
+ if(!outputGuard.safe()){ui.error('출력 차단을 위해 실리를 업데이트하거나 기본 Regex 확장을 켜주세요.');abort(true);return;}
+ const v=current();if(!v||v.b.suspended)return;
+ if(v.b.personaKey&&v.b.personaKey!==v.i.personaKey){ui.error('페르소나가 변경되었습니다. 취향을 재분석하거나 새 브랜치를 연결하세요.');return;}
+ let messages=host.messages();
+ if(['swipe','regenerate'].includes(type)&&messages.at(-1)?.role==='character')messages=messages.slice(0,-1);
+ const snapshot=savedOutfitForMessages(v.b,messages);
+ prepared={revision,character:v.i.id,chat:v.i.chat,content:outfitInjection(snapshot)};
+};
 const {eventSource,eventTypes}=host.context();
 function outgoing(payload,dryRun){if(dryRun)return;const i=host.identity();const valid=prepared&&prepared.revision===revision&&prepared.character===i?.id&&prepared.chat===i?.chat;const content=settings().enabled&&valid?prepared.content:'';const r=injectPayload(payload,content,settings().enabled);injectionError=settings().enabled?(r.malformed?'착장 태그 짝을 확인하세요.':!r.found?'모델 입력에 착장 태그가 없습니다. 인포블록 설정을 확인하세요.':''):'';ui.refresh();}
 if(eventTypes.GENERATE_AFTER_DATA)eventSource.on(eventTypes.GENERATE_AFTER_DATA,outgoing);
-const schedule=()=>{if(!settings().enabled||!settings().auto)return;cancel();clearTimeout(timer);timer=setTimeout(()=>read().catch(e=>{if(e.name!=='AbortError')ui.error(e.message);}),250);};
-for(const key of ['MESSAGE_RECEIVED','MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED','GENERATION_ENDED'])if(eventTypes[key])eventSource.on(eventTypes[key],async()=>{await sanitizeSavedOutputs(getContext);schedule();});
-if(eventTypes.CHAT_CHANGED)eventSource.on(eventTypes.CHAT_CHANGED,()=>{cancel();ui.refresh();});
-if(eventTypes.GENERATION_STOPPED)eventSource.on(eventTypes.GENERATION_STOPPED,()=>{cancel();ui.toast(false);});
+const schedule=()=>{
+ if(!settings().enabled||!settings().auto||generating||analysisController)return;
+ const messageKey=prefixKeys(host.messages()).at(-1)||'root';
+ if(runningRead&&runningRead.messageKey!==messageKey){engine.cancel();readId++;runningRead=null;pending=false;ui.toast(false);}
+ clearTimeout(timer);timer=setTimeout(()=>{if(!generating)read().catch(e=>{if(e.name!=='AbortError')ui.error(e.message);});},300);
+};
+if(eventTypes.GENERATION_STARTED)eventSource.on(eventTypes.GENERATION_STARTED,(type,_options,dryRun)=>{
+ if(dryRun||['quiet','impersonate'].includes(type))return;generating=true;clearTimeout(timer);
+});
+for(const key of ['MESSAGE_RECEIVED','MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED'])if(eventTypes[key])eventSource.on(eventTypes[key],async()=>{await sanitizeSavedOutputs(getContext);schedule();});
+if(eventTypes.GENERATION_ENDED)eventSource.on(eventTypes.GENERATION_ENDED,()=>{generating=false;schedule();});
+if(eventTypes.CHAT_CHANGED)eventSource.on(eventTypes.CHAT_CHANGED,()=>{generating=false;cancel();ui.refresh();});
+if(eventTypes.GENERATION_STOPPED)eventSource.on(eventTypes.GENERATION_STOPPED,()=>{generating=false;cancel();ui.toast(false);});
 if(eventTypes.CHAT_DELETED)eventSource.on(eventTypes.CHAT_DELETED,name=>{cancel();const i=host.identity();if(i)store.deleteChat(i.id,String(name).replace(/\.jsonl$/,''));ui.refresh();});
 if(eventTypes.CHAT_RENAMED)eventSource.on(eventTypes.CHAT_RENAMED,data=>{cancel();const id=String(data.avatarId||host.identity()?.id||'');const c=store.character(id);if(c){const old=String(data.oldFileName||'').replace(/\.jsonl$/,'');const fresh=String(data.newFileName||'').replace(/\.jsonl$/,'');for(const b of Object.values(c.branches))b.links=b.links.map(x=>x===old?fresh:x);store.save();}ui.refresh();});
 window.addEventListener('storage',e=>{if(e.key===KEY){cancel();try{store.data=store.load();ui.refresh();}catch(err){ui.error(err.message);}}});

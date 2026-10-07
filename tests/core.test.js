@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {Store,Engine,KEY,emptyState,replaceTags,validateState,outfitText,visibleMessages,normalizeProfile} from '../core.js';
 import {injectPayload,createHost} from '../host.js';
 import {stripOutfitBlocks,installOutputGuard,sanitizeSavedOutputs} from '../output-guard.js';
+import {candidates} from '../prompts.js';
 const mem=()=>{const map=new Map();return {getItem:k=>map.get(k)??null,setItem:(k,v)=>map.set(k,v),removeItem:k=>map.delete(k),map};};
 const shoe={id:'shoe',name:'스니커즈',category:'신발',color:'흰색',features:['캔버스'],brand:'CONVERSE',available:true};
 function setup(request){const storage=mem(),s=new Store(storage);s.createCharacter('c','끼끼');s.character('c').profiles={character:{fields:{},wardrobe:[shoe]}};const id=s.createBranch('c','첫 장면');s.bind('c',id,'chat');return {s,id,storage,e:new Engine(s,request)};}
@@ -29,3 +30,4 @@ test('구버전 출력 필터는 전체 삭제 시 자신의 규칙만 제거',(
 test('구버전 필터도 스트리밍 접두·이스케이프 블록을 차단',()=>{const c={extensionSettings:{regex:[],disabledExtensions:[]}};installOutputGuard(()=>c);const spec=c.extensionSettings.regex[0].findRegex;const re=new RegExp(spec.slice(1,spec.lastIndexOf('/')),spec.slice(spec.lastIndexOf('/')+1));const block='<kikki_outfit>PRIVATE</kikki_outfit>';for(let i=1;i<=block.length;i++)assert.doesNotMatch(('앞 '+block.slice(0,i)).replace(re,''),/PRIVATE|kikki_outfit/);assert.equal('&lt;kikki_outfit&gt;PRIVATE&lt;/kikki_outfit&gt;'.replace(re,''),'');});
 test('복제 브랜치는 추가된 옷도 그대로 사용 가능',async()=>{const coat={...shoe,id:'coat',name:'가디건',category:'겉옷'};const {s,id,e}=setup(async()=>raw(['coat'],false,[coat]));await e.read('c',id,[msg('가디건을 입음')]);const copied=s.createBranch('c','복제',id);const b=s.branch('c',copied);const copyEngine=new Engine(s,async()=>raw(['coat']));await copyEngine.read('c',copied,[msg('계속 입고 있음')]);assert.equal(b.current.people.character.items[0].id,'coat');});
 test('중첩된 내부 블록도 내용 전체 제거',()=>{assert.equal(stripOutfitBlocks('전<kikki_outfit>OUTER<kikki_outfit>INNER</kikki_outfit>TAIL</kikki_outfit>후'),'전후');});
+test('시대·문화권 후보를 분리하고 현대 동양에 전통복을 강제하지 않음',()=>{const profile=value=>({character:{fields:{'배경·복식 문화':{value}}}});const old=candidates(()=>0,profile('서양 중세 판타지'));assert.equal(old.character.picks[0].type,'튜닉');assert.equal(old.character.picks[0].brandSource,'지역 공방');const east=candidates(()=>0,profile('조선 동양 전근대'));assert.equal(east.character.picks[0].type,'저고리');const modern=candidates(()=>0,profile('동양 현대 도시'));assert.equal(modern.character.picks[0].type,'헨리넥 티셔츠');});

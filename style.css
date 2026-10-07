@@ -17,7 +17,8 @@
 
 /* One undistorted sheet. Only the writing area scrolls; tab contents cannot resize it. */
 #kikki-closet-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 20px),calc((100dvh - 24px) * 2 / 3));height:auto;aspect-ratio:2/3;max-height:none;min-width:0;border:0;padding:0;overflow:hidden;background:transparent;box-shadow:none;border-radius:0;color:#38323b;--kc-paper:#ece8df;--kc-ink:#38323b;--kc-edge:color-mix(in srgb,var(--SmartThemeQuoteColor,#80658e) 32%,#bab4ab)}
-#kikki-closet-dialog .kc-paper{inset:0;background-size:contain;background-repeat:no-repeat;background-position:center;pointer-events:none}
+/* The original asset supplies alpha only; its printed lines are never rendered. */
+#kikki-closet-dialog .kc-paper{inset:0;background-image:url('./assets/diary-unruled.png');background-size:contain;background-repeat:no-repeat;background-position:center;-webkit-mask:url('./assets/diary.webp') center/contain no-repeat;mask:url('./assets/diary.webp') center/contain no-repeat;mask-mode:alpha;pointer-events:none}
 #kikki-closet-dialog .kc-shell{position:absolute;inset:7% 5% 5% 13%;padding:0;display:flex;flex-direction:column;min-height:0;overflow:hidden}
 #kikki-closet-dialog .kc-shell>header,#kikki-closet-dialog .kc-shell>nav{flex:0 0 auto}
 #kikki-closet-dialog .kc-main{min-height:0;flex:1;overflow:auto;overscroll-behavior:contain;padding-right:3px;scrollbar-width:thin}
@@ -30,3 +31,14 @@
 #kikki-closet-dialog.kc-dark-paper{color:#eee8ee;--kc-paper:#302e34;--kc-ink:#eee8ee;--kc-edge:color-mix(in srgb,var(--SmartThemeQuoteColor,#a88bbb) 42%,#4b4850)}
 #kikki-closet-dialog.kc-dark-paper .kc-paper{filter:invert(.85) hue-rotate(180deg)}
 .kc-sub{box-sizing:border-box;max-width:calc(100vw - 20px)}
+#kikki-closet-dialog .kc-nav-tools{margin-left:auto;display:flex;align-items:center}
+#kikki-closet-dialog .kc-shell{bottom:7%}
+@media(max-width:600px){#kikki-closet-dialog .kc-item{min-height:18px;padding:1px 0}}
+/* Compact mobile controls; do not shrink the draggable mascot. */
+@media(max-width:600px){
+ .kc-dialog button,.kc-bubble button,.kc-extension-settings button{font-size:10px;line-height:1.2;min-height:18px;padding:3px 7px}
+ .kc-dialog .tag{font-size:10px;min-height:18px;padding:3px 8px;border-radius:3px 6px 0 0}
+ .kc-dialog .icon,.kc-bubble .icon{font-size:14px;min-width:24px;min-height:20px;padding:1px 4px}
+ .kc-dialog nav{gap:4px;margin-top:8px}
+ .kc-bottom,.kc-actions{gap:5px;margin-top:8px}
+}

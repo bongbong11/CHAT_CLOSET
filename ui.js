@@ -1,7 +1,7 @@
-import {CATEGORIES,PROFILE_FIELDS,clone,outfitInjection,itemDescription,itemBrandLabel} from './core.js';
+import {CATEGORIES,PROFILE_FIELDS,clone,outfitInjection,itemDescription,itemBrandLabel,hash} from './core.js';
 import {REPORT_SECTIONS,FIELD_LABELS} from './profile-report.js';
 import {visibleBounds,clampMascot,restoreMascot,rememberMascot} from './mascot-position.js';
-import {MAIN_WARDROBE,WARDROBE_TABS,wardrobeLevels,wardrobeTargets,ownedItems} from './wardrobe.js';
+import {WARDROBE_TABS,wardrobeLevel,wardrobeTargets,ownedItems} from './wardrobe.js';
 
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const loreKey=item=>JSON.stringify([item.book,String(item.uid)]);
@@ -10,6 +10,8 @@ export function createUI(api){
  const emptyDraft=()=>({target:'',sheet:{},available:{character:[],persona:[]},selected:{character:new Set(),persona:new Set()},status:{character:'',persona:''},busy:false});
  let dialog,sub,quick,bubble,notice,tab='actual',profileTab='character',lastFocus,sourceKey='';
  let draft=emptyDraft();
+ const wardrobeLabels=new Map();
+ const labelKey=item=>JSON.stringify([item.id,item.name,item.color]);
  const asset=name=>new URL('assets/'+name,api.base).href;
  const el=(tag,cls)=>{const node=document.createElement(tag);node.className=cls;return node;};
  const button=(label,action,cls='',attrs='')=>`<button type="button" class="${cls}" data-action="${action}" ${attrs}>${label}</button>`;
@@ -38,7 +40,7 @@ export function createUI(api){
  }
  function select(name,label,values,value){return `<label class="kc-field">${label}<select name="${name}">${values.map(entry=>{const [id,text]=Array.isArray(entry)?entry:[entry,entry];return `<option value="${esc(id)}" ${String(value)===String(id)?'selected':''}>${esc(text)}</option>`;}).join('')}</select></label>`;}
  function checkbox(name,label,value){return `<label class="kc-check"><input type="checkbox" name="${esc(name)}" ${value?'checked':''}>${label}</label>`;}
- function ensureDraft(){const state=api.state(),identity=state.identity;const key=identity?`${identity.id}:${identity.chat}:${identity.personaKey}:${state.bid||''}`:'';if(key!==sourceKey){sourceKey=key;draft=emptyDraft();for(const who of ['character','persona'])draft.selected[who]=new Set(state.branch?.analysisSources?.selected?.[who]||[]);if(sub?.dataset.sourceTarget||sub?.profileDraft)closeSub();}}
+ function ensureDraft(){const state=api.state(),identity=state.identity;const key=identity?`${identity.id}:${identity.chat}:${identity.personaKey}:${state.bid||''}`:'';if(key!==sourceKey){sourceKey=key;draft=emptyDraft();for(const who of ['character','persona'])draft.selected[who]=new Set(state.branch?.analysisSources?.selected?.[who]||[]);if(sub?.dataset.sourceTarget||sub?.profileDraft||sub?.peopleDraft)closeSub();}}
 
  function renderMain(){
   if(!dialog?.open)return;
@@ -70,11 +72,13 @@ export function createUI(api){
  function taste(){
   const branch=api.state().branch;if(!branch)return error('취향을 먼저 분석하세요.');
   const d=popup('취향 분석 보고서',`<nav class="kc-profile-tabs">${button('캐릭터','profile-character','tag')}${button('페르소나','profile-persona','tag')}${button('번역하기','translate-profile','kc-translate')}</nav><div class="kc-report-status" role="status"></div><div class="kc-profile-grid"></div><div class="kc-actions kc-report-actions">${button('원문 수정','edit-profile')}${button('수정 저장','save-profile','primary')}${button('기본 프로필에 반영','promote')}</div>`);
-  d.classList.add('kc-report');d.profileDraft=clone(branch.profiles);d.translations={};d.reportLanguage={character:'en',persona:'en'};d.reportEditing=false;renderProfile();
+  d.classList.add('kc-report');d.profileDraft=clone(branch.profiles);d.translations={};d.reportLanguage={character:'en',persona:'en'};d.reportEditing=false;
+  for(const who of ['character','persona']){const source=d.profileDraft[who],saved=branch.reportTranslations?.[who];if(source&&saved?.signature===hash(JSON.stringify(source.fields))){d.translations[who]={signature:JSON.stringify(source.fields),profile:{...clone(source),fields:Object.fromEntries(Object.entries(source.fields).map(([key,field])=>[key,{...field,...saved.fields[key]}]))}};d.reportLanguage[who]=saved.language||'ko';}}
+  renderProfile();
  }
  function renderProfile(){
   const d=sub;if(!d?.profileDraft)return;
-  const source=d.profileDraft[profileTab],signature=JSON.stringify(source),cached=d.translations[profileTab];
+  const source=d.profileDraft[profileTab],signature=JSON.stringify(source?.fields),cached=d.translations[profileTab];
   const korean=d.reportLanguage[profileTab]==='ko'&&cached?.signature===signature;
   const profile=korean?cached.profile:source;
   d.querySelector('.kc-report-status').textContent=d.translationController?'한국어로 번역하고 있습니다…':korean?'한국어 번역 · 저장된 원문은 유지됩니다.':'English original';
@@ -94,52 +98,79 @@ export function createUI(api){
  }
  async function translateProfileView(){
   const d=sub,who=profileTab,source=d?.profileDraft?.[who];if(!source||d.translationController)return;
-  if(d.reportLanguage[who]==='ko'){d.reportLanguage[who]='en';renderProfile();return;}
-  const signature=JSON.stringify(source);
-  if(d.translations[who]?.signature===signature){d.reportLanguage[who]='ko';renderProfile();return;}
+  if(d.reportLanguage[who]==='ko'){d.reportLanguage[who]='en';api.saveReportTranslation(who,source,null,'en');renderProfile();return;}
+  const signature=JSON.stringify(source.fields);
+  if(d.translations[who]?.signature===signature){d.reportLanguage[who]='ko';api.saveReportTranslation(who,source,null,'ko');renderProfile();return;}
   const controller=new AbortController();d.translationController=controller;renderProfile();
   try{
    const translated=await api.translateProfile(clone(source),controller.signal);
-   if(sub!==d||!d.open||controller.signal.aborted||JSON.stringify(d.profileDraft[who])!==signature)return;
+   if(sub!==d||!d.open||controller.signal.aborted||JSON.stringify(d.profileDraft[who].fields)!==signature)return;
    d.translations[who]={signature,profile:translated};d.reportLanguage[who]='ko';
+   api.saveReportTranslation(who,source,translated,'ko');
   }catch(e){if(e.name!=='AbortError'&&sub===d)error(e.message);}
   finally{if(d.translationController===controller)d.translationController=null;if(sub===d)renderProfile();}
  }
  function settings(){const state=api.state();let profiles=[];try{profiles=api.profiles().map(p=>[p.id,(p.name||p.id)+' · '+(p.model||'')]);}catch{}popup('설정',`${checkbox('enabled','사용함',state.settings.enabled)}${select('profileId','SillyTavern 연결 프로필',[['','선택하세요'],...profiles],state.settings.profileId)}<div class="kc-actions">${button('프로필 새로고침','profiles-refresh')}${button('연결 확인','test')}</div><p class="kc-muted">모델·주소·키는 SillyTavern의 API 연결 메뉴에서 관리합니다.</p>${checkbox('auto','채팅 변화 자동 판독',state.settings.auto)}<label class="kc-field">읽을 최근 채팅 턴 수<input type="number" name="chatTurns" min="1" max="50" step="1" value="${esc(state.settings.chatTurns??8)}"></label><p class="kc-muted">1턴은 사용자 메시지와 이어지는 답변입니다. 최근 1~50턴을 읽으며, 저장된 착장 상태도 함께 참고합니다.</p>${checkbox('mascot','끼끼 빠른 확인 표시',state.settings.mascot)}${checkbox('mascotLocked','끼끼 위치 고정',state.settings.mascotLocked)}${button('끼끼 위치 초기화','mascot-reset')}<p class="kc-muted">PC와 모바일 위치를 따로 기억합니다. 고정해도 화면 밖으로 나가면 안쪽으로 맞춥니다.</p><div class="kc-section">주입 위치</div><p class="kc-muted">모델에게 전달되는 인포블록에서 원하는 위치에 아래 두 줄을 한 번 붙여넣으세요.</p><pre>&lt;kikki_outfit&gt;\n&lt;/kikki_outfit&gt;</pre>${button('태그 복사','copy')}<details><summary>주입 미리보기</summary><pre>${esc(outfitInjection(state.branch?.current)||'현재 착장 없음')}</pre></details><div class="kc-section">서버 저장소</div><p class="kc-storage-status kc-muted" role="status"></p><p class="kc-muted">설정과 판독 결과는 같은 실리 서버·계정에 자동 저장됩니다. 수동 착장·보고서 편집은 저장 버튼을 누르세요.</p><div class="kc-actions">${button('서버 다시 연결','storage-retry')}${state.legacyAvailable?button('이 브라우저의 이전 데이터 가져오기','storage-import'):''}</div><div class="kc-section">저장 데이터 관리</div><div class="kc-actions">${button('현재 채팅 데이터 삭제','delete-chat')}${button('캐릭터 전체 삭제','delete-character')}${button('전체 데이터 삭제','delete-all')}</div>`);}
  function branches(){const {character,bid}=api.state();popup('스토리 브랜치',`<div class="kc-actions">${button('기본으로 새 브랜치','new')}${button('현재 상태 복제','copy-branch')}</div>${character?Object.entries(character.branches).map(([id,b])=>`<div class="kc-branch"><span>${esc(b.name)}${id===bid?' · 현재':''}<small>연결 채팅 ${b.links.length}개</small></span><button data-action="use-branch" data-id="${esc(id)}">이어가기</button><button data-action="delete-branch" data-id="${esc(id)}">삭제</button></div>`).join(''):'<p class="kc-muted">취향 분석 후 브랜치를 만들 수 있어요.</p>'}`);}
  function wardrobeSettings(settings){
-  const levels=wardrobeLevels(settings);
-  return '<div class="kc-wardrobe-settings"><strong>기본 옷장 구성</strong>'+Object.entries(MAIN_WARDROBE).map(([key,v])=>select('wardrobeLevel:'+key,v.label,[['low','적게'],['medium','중간'],['high','많이']],levels[key])).join('')+'<p class="kc-muted">다음 취향 분석부터 적용합니다. 기존 옷은 유지하고, 속옷·양말·소품은 필요한 종류만 구성합니다.</p></div>';
- }
- function garmentMark(category){
-  const paths={top:'M10 6 5 9 2 16l6 3 2-4v19h20V15l2 4 6-3-3-7-5-3c0 5-20 5-20 0Z',bottom:'M10 5h20l3 29H22l-2-17-2 17H7Z',outerwear:'M10 6 3 13l3 21h7V13l7 7 7-7v21h7l3-21-7-7-10 5Z',footwear:'M5 19v10h31v-6l-15-3-7-8-6 1Z',underwear:'M7 11h26l-5 20H12Z',accessory:'M10 20a10 10 0 1 0 20 0 10 10 0 1 0-20 0M16 3h8v7h-8ZM16 30h8v7h-8Z'};
-  return '<svg class="kc-garment-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="'+paths[category]+'" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+  return '<div class="kc-wardrobe-settings">'+select('wardrobeLevel','기본 옷장 구성',[['low','적게'],['medium','중간'],['high','많이']],wardrobeLevel(settings))+'<p class="kc-muted">생활패턴에 맞게 종류별로 배분합니다. 다음 분석·새로 채우기에 적용하며, 기존 옷은 자동 삭제하지 않습니다.</p></div>';
  }
  function edit(){
   const branch=api.state().branch;if(!branch)return error('브랜치를 먼저 연결하세요.');
   const d=popup('옷장 · 착장 수정','');d.classList.add('kc-wardrobe');
   d.peopleDraft=clone(branch.current.people);d.wardrobeWho='character';d.wardrobeCategory='top';renderWardrobe();
  }
+ async function translateWardrobeView(items){
+  const d=sub;if(!d?.peopleDraft||d.wardrobeBusy)return;
+  const missing=items.filter(item=>!wardrobeLabels.has(labelKey(item))&&!d.failedLabels?.has(labelKey(item)));
+  if(!missing.length)return;
+  const signature=JSON.stringify(missing.map(labelKey));if(d.labelRequest===signature)return;
+  d.translationController?.abort();const controller=new AbortController();d.translationController=controller;d.labelRequest=signature;
+  try{
+   const labels=await api.translateWardrobe(clone(missing),controller.signal);
+   if(sub!==d||!d.open||controller.signal.aborted)return;
+   for(const item of missing)wardrobeLabels.set(labelKey(item),labels[item.id]);
+   while(wardrobeLabels.size>240)wardrobeLabels.delete(wardrobeLabels.keys().next().value);
+  }catch(e){if(e.name!=='AbortError'&&sub===d){d.failedLabels??=new Set();for(const item of missing)d.failedLabels.add(labelKey(item));error(e.message);}}
+  finally{if(d.translationController===controller){d.translationController=null;d.labelRequest='';if(sub===d)renderWardrobe();}}
+ }
+ async function refillSelectedWardrobe(){
+  const d=sub;if(!d?.peopleDraft||d.wardrobeBusy)return;
+  const who=d.wardrobeWho,category=d.wardrobeCategory;
+  d.translationController?.abort();d.translationController=null;d.labelRequest='';d.wardrobeBusy=true;renderWardrobe();
+  try{
+   const changed=await api.refillWardrobe(who,category);
+   if(changed&&sub===d){const branch=api.state().branch,available=new Set(ownedItems(branch,who).map(i=>i.id));d.peopleDraft[who].items=d.peopleDraft[who].items.filter(i=>available.has(i.id));d.failedLabels=new Set();}
+  }finally{d.wardrobeBusy=false;if(sub===d)renderWardrobe();}
+ }
  function renderWardrobe(){
   const d=sub;if(!d?.peopleDraft)return;
+  d.shelfScroll??={};if(d.renderedShelf)d.shelfScroll[d.renderedShelf]=d.querySelector('.kc-wardrobe-shelf')?.scrollTop||0;
   const {branch,settings}=api.state(),who=d.wardrobeWho,person=d.peopleDraft[who],all=ownedItems(branch,who),active=WARDROBE_TABS.find(t=>t.id===d.wardrobeCategory);
   const items=all.filter(i=>i.category===active.category),target=wardrobeTargets(settings)[active.id],saved=new Set(branch.current.people[who].items.map(i=>i.id));
   d.querySelector('.kc-content').innerHTML=`<div class="kc-wardrobe-people" role="tablist" aria-label="옷장 인물">${['character','persona'].map(id=>button(id==='character'?'캐릭터':'페르소나','wardrobe-person','tag '+(id===who?'active':''),'role="tab" aria-selected="'+(id===who)+'" data-who="'+id+'"')).join('')}</div><nav class="kc-wardrobe-tabs" role="tablist" aria-label="옷장 종류">${WARDROBE_TABS.map(t=>button(t.label+' <small>'+all.filter(i=>i.category===t.category).length+'</small>','wardrobe-category','tag '+(t.id===active.id?'active':''),'role="tab" aria-selected="'+(t.id===active.id)+'" data-category="'+t.id+'"')).join('')}</nav><div class="kc-wardrobe-heading"><span>${esc(active.label)} · ${items.length}종</span><small>${target?'초기 구성 목표 '+target+'종':'필요한 종류만 보유'}</small></div><div class="kc-wardrobe-shelf" role="tabpanel">${items.length?items.map(item=>{
    const selected=person.items.some(i=>i.id===item.id);
-   return `<article class="kc-wardrobe-card ${selected?'is-worn':''}"><label class="kc-wardrobe-pick"><input type="checkbox" name="item:${esc(item.id)}" ${selected?'checked':''} aria-label="${esc(itemDescription(item,2))} 착용"><span class="kc-wardrobe-badge">${selected?(saved.has(item.id)?'착용 중':'선택됨'):'보유'}</span>${garmentMark(active.id)}<strong>${esc(itemDescription(item,2))}</strong>${settings.brands?`<small class="kc-wardrobe-brand">${esc(itemBrandLabel(item))}</small>`:''}</label></article>`;
-  }).join(''):'<p class="kc-muted kc-wardrobe-empty">아직 이 종류의 옷이 없습니다.</p>'}</div><div class="kc-wardrobe-footer">${checkbox('nude','완전 탈의',person.nude)}<span class="kc-muted">선택한 옷 ${person.items.length}개</span>${button('착장 저장','save-outfit','primary')}</div>`;
+   const label=wardrobeLabels.get(labelKey(item))||(d.failedLabels?.has(labelKey(item))?itemDescription(item,2):'한글 표시 불러오는 중…');
+   return `<label class="kc-wardrobe-row ${selected?'is-worn':''}"><input type="checkbox" name="item:${esc(item.id)}" ${selected?'checked':''} aria-label="${esc(label)} 착용"><span class="kc-wardrobe-name">${esc(label)}${selected?`<small class="kc-wardrobe-badge">${saved.has(item.id)?'착용 중':'선택됨'}</small>`:''}</span><span class="kc-wardrobe-brand">${esc(itemBrandLabel(item))}</span></label>`;
+  }).join(''):'<p class="kc-muted kc-wardrobe-empty">아직 이 종류의 옷이 없습니다.</p>'}</div><div class="kc-wardrobe-footer">${checkbox('nude','완전 탈의',person.nude)}<span class="kc-muted">선택한 옷 ${person.items.length}개</span><div class="kc-wardrobe-buttons">${button(d.wardrobeBusy?'새로 채우는 중…':'옷장 새로 채우기','refill-wardrobe','','title="선택한 인물의 '+esc(active.label)+' 목록만 교체" '+(branch.profiles[who]?'':'disabled'))}${button('착장 저장','save-outfit','primary')}</div></div>`;
+  if(d.wardrobeBusy)d.querySelectorAll('.kc-content button,.kc-content input').forEach(node=>node.disabled=true);
+  d.renderedShelf=who+':'+active.id;d.querySelector('.kc-wardrobe-shelf').scrollTop=d.shelfScroll[d.renderedShelf]||0;
+  const tabs=d.querySelector('.kc-wardrobe-tabs'),selectedTab=tabs.querySelector('.active');
+  if(selectedTab.offsetLeft+selectedTab.offsetWidth>tabs.scrollLeft+tabs.clientWidth)tabs.scrollLeft=selectedTab.offsetLeft+selectedTab.offsetWidth-tabs.clientWidth;
+  else if(selectedTab.offsetLeft<tabs.scrollLeft)tabs.scrollLeft=selectedTab.offsetLeft;
   d.querySelector('[name="nude"]').addEventListener('change',event=>{person.nude=event.target.checked;if(person.nude)person.items=[];renderWardrobe();});
   d.querySelectorAll('[name^="item:"]').forEach(input=>input.addEventListener('change',()=>{
    const id=input.name.slice(5),item=all.find(i=>i.id===id);person.items=person.items.filter(i=>i.id!==id);
    if(input.checked){person.nude=false;person.items.push(clone(item));}renderWardrobe();
   }));
+  void translateWardrobeView(items);
  }
 
 
  async function loadLore(who){const owner=draft;owner.status[who]='연결된 로어북을 읽는 중…';renderSourcePopup();const entries=await api.lore(who);ensureDraft();if(owner!==draft)return;draft.available[who]=entries;draft.selected[who]=new Set([...draft.selected[who]].filter(key=>entries.some(item=>loreKey(item)===key)));draft.status[who]=entries.length?`연결 로어북 ${new Set(entries.map(item=>item.book)).size}개 · 필요한 엔트리를 체크하세요.`:'연결된 로어북이 없습니다.';renderSourcePopup();}
  function buildSelection(){const who=draft.target;return {targets:[who],sources:{[who]:{sheet:draft.sheet[who]||null,lore:draft.available[who].filter(item=>draft.selected[who].has(loreKey(item))).map(item=>({book:item.book,uid:item.uid,title:item.title,content:item.content}))}}};}
-async function click(event){const node=event.target.closest('button');if(!node||!node.dataset.action||node.disabled)return;await run(async()=>{const action=node.dataset.action;if(action==='close')dialog.close();else if(action==='sub-close')closeSub();else if(action==='tab-actual'){tab='actual';refresh();}else if(action==='tab-options'){tab='options';refresh();}else if(action==='settings'){settings();storageStatus();}else if(action==='storage-retry')await api.retryStorage();else if(action==='storage-import'){await api.importLegacy();settings();storageStatus();}else if(action==='mascot-reset')resetMascot();else if(action==='taste')taste();else if(action==='open-sources')sourcePicker();else if(action.startsWith('sheet-load-')){const who=action.slice(11);const owner=draft;const sheet=await api.sheet(who);ensureDraft();if(owner!==draft)return;draft.sheet[who]=sheet;renderSourcePopup();}else if(action.startsWith('sheet-view-')){const who=action.slice(11),sheet=draft.sheet[who];if(sheet){let preview=sub.querySelector('.kc-source-preview');if(preview){preview.remove();}else{preview=el('pre','kc-source-preview');preview.textContent=sheet.source;node.closest('.kc-source-card').append(preview);}}}else if(action.startsWith('lore-load-'))await loadLore(action.slice(10));else if(action==='analyze'){if(draft.busy)return;const owner=draft,who=draft.target;owner.busy=true;renderSourcePopup();try{const saved=await api.analyze(buildSelection());if(saved){profileTab=who;closeSub();taste();}}finally{owner.busy=false;renderSourcePopup();}}else if(action==='read'){const state=api.state();if(!state.settings.enabled)throw Error('설정에서 사용함을 켜세요.');if(!state.branch)throw Error('취향을 먼저 분석하거나 브랜치를 연결하세요.');state.branch.suspended=false;await api.read();}else if(action==='profile-character'||action==='profile-persona'){profileTab=action.slice(8);sub.reportEditing=false;renderProfile();}else if(action==='translate-profile')await translateProfileView();else if(action==='edit-profile'){sub.reportEditing=!sub.reportEditing;sub.reportLanguage[profileTab]='en';renderProfile();}else if(action==='save-profile'){api.saveProfiles(sub.profileDraft);closeSub();}else if(action==='promote'){if(confirm('이 취향을 기본 프로필에 반영할까요?')){api.saveProfiles(sub.profileDraft);api.promote();closeSub();}}else if(action==='branches')branches();else if(action==='new'||action==='copy-branch'){const name=prompt('브랜치 이름','새 스토리');if(name!==null){await api.newBranch(action==='new'?'new':'copy',name);closeSub();}}else if(action==='use-branch'){await api.newBranch('existing','',node.dataset.id);closeSub();}else if(action==='delete-branch'){if(confirm('이 브랜치와 연결된 착장 기록을 삭제할까요?')){api.remove('branch',node.dataset.id);branches();}}else if(action==='edit')edit();else if(action==='wardrobe-person'){sub.wardrobeWho=node.dataset.who;renderWardrobe();}else if(action==='wardrobe-category'){sub.wardrobeCategory=node.dataset.category;renderWardrobe();}else if(action==='save-outfit'){api.saveOutfit(sub.peopleDraft);closeSub();}else if(action==='profiles-refresh'){settings();}else if(action==='test'){await api.testConnection();node.textContent='연결 확인됨';}else if(action==='copy'){await copyText('<kikki_outfit>\n</kikki_outfit>');node.textContent='복사됨';}else if(['delete-chat','delete-character','delete-all'].includes(action)){const kind=action.slice(7);if(confirm(kind==='chat'?'현재 채팅의 착장 데이터를 초기화할까요? 공유 브랜치는 다른 채팅을 보존합니다.':kind==='character'?'이 캐릭터의 모든 프로필·옷장·브랜치를 삭제할까요?':'끼끼의상실의 설정과 저장 데이터 전부를 삭제할까요?')){api.remove(kind);closeSub();}}});}
- function change(event){return run(async()=>{if(event.target.closest('.kc-report'))return;const name=event.target.name;if(!name||name==='editWho'||name.startsWith('item:')||name==='nude')return;if(name.startsWith('wardrobeLevel:')){const key=name.split(':')[1];api.updateSettings({wardrobeLevels:{...wardrobeLevels(api.state().settings),[key]:event.target.value}});return;}if(name==='analysisTarget'){draft.target=event.target.value;refresh();return;}if(name.startsWith('lore:')){const [,who,...rest]=name.split(':');const key=rest.join(':');event.target.checked?draft.selected[who].add(key):draft.selected[who].delete(key);renderSourcePopup();return;}let value=event.target.type==='checkbox'?event.target.checked:event.target.value;if(['detail','chatTurns'].includes(name))value=Number(value);if(name==='chatTurns'){value=Math.max(1,Math.min(50,Math.floor(value)||8));event.target.value=value;}if(name==='fixed')value=value==='true';api.updateSettings({[name]:value});});}
+async function click(event){const node=event.target.closest('button');if(!node||!node.dataset.action||node.disabled)return;await run(async()=>{const action=node.dataset.action;if(action==='close')dialog.close();else if(action==='sub-close')closeSub();else if(action==='tab-actual'){tab='actual';refresh();}else if(action==='tab-options'){tab='options';refresh();}else if(action==='settings'){settings();storageStatus();}else if(action==='storage-retry')await api.retryStorage();else if(action==='storage-import'){await api.importLegacy();settings();storageStatus();}else if(action==='mascot-reset')resetMascot();else if(action==='taste')taste();else if(action==='open-sources')sourcePicker();else if(action.startsWith('sheet-load-')){const who=action.slice(11);const owner=draft;const sheet=await api.sheet(who);ensureDraft();if(owner!==draft)return;draft.sheet[who]=sheet;renderSourcePopup();}else if(action.startsWith('sheet-view-')){const who=action.slice(11),sheet=draft.sheet[who];if(sheet){let preview=sub.querySelector('.kc-source-preview');if(preview){preview.remove();}else{preview=el('pre','kc-source-preview');preview.textContent=sheet.source;node.closest('.kc-source-card').append(preview);}}}else if(action.startsWith('lore-load-'))await loadLore(action.slice(10));else if(action==='analyze'){if(draft.busy)return;const owner=draft,who=draft.target;owner.busy=true;renderSourcePopup();try{const saved=await api.analyze(buildSelection());if(saved){profileTab=who;closeSub();taste();}}finally{owner.busy=false;renderSourcePopup();}}else if(action==='read'){const state=api.state();if(!state.settings.enabled)throw Error('설정에서 사용함을 켜세요.');if(!state.branch)throw Error('취향을 먼저 분석하거나 브랜치를 연결하세요.');state.branch.suspended=false;await api.read();}else if(action==='profile-character'||action==='profile-persona'){profileTab=action.slice(8);sub.reportEditing=false;renderProfile();}else if(action==='translate-profile')await translateProfileView();else if(action==='edit-profile'){sub.reportEditing=!sub.reportEditing;sub.reportLanguage[profileTab]='en';renderProfile();}else if(action==='save-profile'){api.saveProfiles(sub.profileDraft);closeSub();}else if(action==='promote'){if(confirm('이 취향을 기본 프로필에 반영할까요?')){api.saveProfiles(sub.profileDraft);api.promote();closeSub();}}else if(action==='branches')branches();else if(action==='new'||action==='copy-branch'){const name=prompt('브랜치 이름','새 스토리');if(name!==null){await api.newBranch(action==='new'?'new':'copy',name);closeSub();}}else if(action==='use-branch'){await api.newBranch('existing','',node.dataset.id);closeSub();}else if(action==='delete-branch'){if(confirm('이 브랜치와 연결된 착장 기록을 삭제할까요?')){api.remove('branch',node.dataset.id);branches();}}else if(action==='edit')edit();else if(action==='wardrobe-person'){sub.wardrobeWho=node.dataset.who;renderWardrobe();}else if(action==='wardrobe-category'){sub.wardrobeCategory=node.dataset.category;renderWardrobe();}else if(action==='refill-wardrobe')await refillSelectedWardrobe();else if(action==='save-outfit'){api.saveOutfit(sub.peopleDraft);closeSub();}else if(action==='profiles-refresh'){settings();}else if(action==='test'){await api.testConnection();node.textContent='연결 확인됨';}else if(action==='copy'){await copyText('<kikki_outfit>\n</kikki_outfit>');node.textContent='복사됨';}else if(['delete-chat','delete-character','delete-all'].includes(action)){const kind=action.slice(7);if(confirm(kind==='chat'?'현재 채팅의 착장 데이터를 초기화할까요? 공유 브랜치는 다른 채팅을 보존합니다.':kind==='character'?'이 캐릭터의 모든 프로필·옷장·브랜치를 삭제할까요?':'끼끼의상실의 설정과 저장 데이터 전부를 삭제할까요?')){api.remove(kind);wardrobeLabels.clear();closeSub();}}});}
+ function change(event){return run(async()=>{if(event.target.closest('.kc-report'))return;const name=event.target.name;if(!name||name==='editWho'||name.startsWith('item:')||name==='nude')return;if(name==='analysisTarget'){draft.target=event.target.value;refresh();return;}if(name.startsWith('lore:')){const [,who,...rest]=name.split(':');const key=rest.join(':');event.target.checked?draft.selected[who].add(key):draft.selected[who].delete(key);renderSourcePopup();return;}let value=event.target.type==='checkbox'?event.target.checked:event.target.value;if(['detail','chatTurns'].includes(name))value=Number(value);if(name==='chatTurns'){value=Math.max(1,Math.min(50,Math.floor(value)||8));event.target.value=value;}if(name==='fixed')value=value==='true';api.updateSettings({[name]:value});});}
 
  function mini(){if(bubble?.open){bubble.close();refresh();return;}bubble??=el('dialog','kc-bubble');bubble.innerHTML=`<header><span>지금 입고 있는 옷</span>${button('×','mini-close','icon')}</header><div class="kc-mini-content"></div>${button('의상실 펼치기 ↗','mini-open')}`;if(!bubble.isConnected){document.body.append(bubble);bubble.addEventListener('click',event=>{const action=event.target.closest('button')?.dataset.action;if(action==='mini-close')bubble.close();if(action==='mini-open'){bubble.close();open();}refresh();});bubble.addEventListener('close',refresh);}bubble.show();refresh();}
  function mascotMode(){return matchMedia('(max-width: 600px)').matches?'mobile':'desktop';}
@@ -204,6 +235,6 @@ async function click(event){const node=event.target.closest('button');if(!node||
  function toast(show){if(!show){notice?.remove();notice=null;return;}if(!notice){notice=el('button','kc-toast');notice.type='button';notice.textContent='의상을 맞춰보고 있습니다';notice.title='누르면 안내를 숨깁니다';notice.setAttribute('aria-label','의상을 맞춰보고 있습니다. 누르면 안내 숨기기');notice.addEventListener('click',()=>notice?.remove());}const parent=sub?.open?sub:dialog?.open?dialog:document.body;if(notice.parentElement!==parent)parent.append(notice);}
  function mount(){const settingsPanel=document.querySelector('#extensions_settings2')||document.querySelector('#extensions_settings');if(settingsPanel){const block=el('details','kc-extension-settings');block.innerHTML=`<summary>${mascot('kc-settings-icon')}<span>끼끼의상실</span></summary><label class="kc-check"><input id="kc-enabled" type="checkbox">사용함</label>${checkbox('mascotLocked','끼끼 위치 고정',api.state().settings.mascotLocked)}<button type="button" class="kc-open">의상실 열기</button><button type="button" class="kc-reset">끼끼 위치 초기화</button><p class="kc-storage-status kc-muted" role="status"></p>`;block.querySelector('#kc-enabled').addEventListener('change',event=>run(()=>api.updateSettings({enabled:event.target.checked})));block.querySelector('[name="mascotLocked"]').addEventListener('change',change);block.querySelector('.kc-open').addEventListener('click',open);block.querySelector('.kc-reset').addEventListener('click',()=>run(resetMascot));settingsPanel.append(block);}const menu=document.querySelector('#extensionsMenu');if(menu){const menuButton=el('button','list-group-item flex-container flexGap5 kc-menu-button');menuButton.type='button';menuButton.innerHTML=`${mascot('kc-menu-icon')}<span>끼끼의상실</span>`;menuButton.addEventListener('click',open);menu.append(menuButton);}quick=el('button','kc-mascot');quick.type='button';quick.setAttribute('aria-label','끼끼 현재 착장');quick.innerHTML=`<img src="${asset('kikki-closed.webp')}" alt="끼끼">`;quick.addEventListener('click',mini);document.body.append(quick);draggable();refresh();}
  function storageStatus(){document.querySelectorAll('.kc-storage-status').forEach(n=>n.textContent=api.state().storageStatus);}
- function remoteRefresh(){closeSub();sourceKey='';refresh();}
+ function remoteRefresh(){closeSub();wardrobeLabels.clear();sourceKey='';refresh();}
  return {mount,refresh,toast,error,open,storageStatus,remoteRefresh};
 }

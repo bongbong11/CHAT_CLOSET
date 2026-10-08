@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {wardrobeLevels,wardrobeTargets,wardrobeDeficits,ownedItems,composeWardrobe} from '../wardrobe.js';
+import {wardrobeLevels,wardrobeTargets,wardrobeDeficits,ownedItems,composeWardrobe,replaceWardrobeCategory} from '../wardrobe.js';
 import {Store,KEY,emptyState,Engine,memoryFromStates,updateOutfitMemory,outfitInjection} from '../core.js';
 import {needsOutfitRead} from '../scene-gate.js';
 import {SCENE,ANALYSIS,WARDROBE_FILL} from '../prompts.js';
@@ -9,7 +9,7 @@ const shirt=garment('shirt','상의'),pants=garment('pants','하의'),shoe=garme
 const m=(id,content,swipe=0)=>({id:String(id),role:'character',content,swipe});
 test('이전 전체 옷장 크기를 카테고리별 구성으로 이전하며 옷은 삭제하지 않음',()=>{
  const legacy={version:1,settings:{wardrobeSize:10},characters:{c:{profiles:{character:{wardrobe:[shirt]}},branches:{}}}};
- const s=new Store({getItem:()=>JSON.stringify(legacy)});assert.deepEqual(s.data.settings.wardrobeLevels,{top:'low',bottom:'low',outerwear:'low',footwear:'low'});assert.equal(Object.hasOwn(s.data.settings,'wardrobeSize'),false);assert.equal(s.character('c').profiles.character.wardrobe[0].id,'shirt');
+ const s=new Store({getItem:()=>JSON.stringify(legacy)});assert.equal(s.data.settings.wardrobeLevel,'low');assert.equal(Object.hasOwn(s.data.settings,'wardrobeLevels'),false);assert.equal(Object.hasOwn(s.data.settings,'wardrobeSize'),false);assert.equal(s.character('c').profiles.character.wardrobe[0].id,'shirt');
  assert.deepEqual(wardrobeTargets({wardrobeLevels:{top:'high',bottom:'low',outerwear:'medium',footwear:'high'}}),{top:10,bottom:3,outerwear:3,footwear:5});assert.equal(wardrobeLevels({wardrobeSize:24}).top,'high');
 });
 test('부족 수량은 주요 의류만 세며 양말·벨트와 명시적 예외는 할당량을 채우지 않음',()=>{
@@ -46,4 +46,19 @@ test('탈의 뒤 장소 이동은 판독 모델에 직전 착장을 보내고 �
 });
 test('주입은 이야기 우선과 서술 강제 금지를 명시하고 확장 모델만 생략된 재착용을 추론',()=>{
  const prompt=outfitInjection(outfit());assert.match(prompt,/current story input\/output take priority/);assert.match(prompt,/Never invent actions or reasons/);assert.match(SCENE,/BOTH user input and roleplay output/);assert.match(SCENE,/ordinary redressing/);assert.match(SCENE,/not an instruction to narrate redressing/);assert.match(ANALYSIS,/wardrobeTargets/);assert.doesNotMatch(ANALYSIS,/wardrobeSize/);assert.match(WARDROBE_FILL,/missingByCategory/);
+});
+
+test('하나의 기본 옷장 구성으로 기존 카테고리별 수량 기준을 적용',()=>{
+ assert.deepEqual(wardrobeTargets({wardrobeLevel:'low'}),{top:4,bottom:3,outerwear:1,footwear:2});
+ assert.deepEqual(wardrobeTargets({wardrobeLevel:'medium'}),{top:7,bottom:5,outerwear:3,footwear:3});
+ assert.deepEqual(wardrobeTargets({wardrobeLevel:'high'}),{top:10,bottom:7,outerwear:5,footwear:5});
+ const s=new Store({getItem:()=>JSON.stringify({version:1,characters:{},settings:{wardrobeLevels:{top:'low',bottom:'medium',outerwear:'medium',footwear:'medium'}}})});assert.equal(s.data.settings.wardrobeLevel,'medium');
+});
+test('한 인물의 선택 종류만 새 목록으로 교체하고 현재 옷과 다른 인물은 보존',()=>{
+ const s=new Store({getItem:()=>null,setItem(){}});s.createCharacter('c','C');const b=s.branch('c',s.createBranch('c','B'));
+ const old=garment('old-top','상의'),extra=garment('extra-top','상의');b.profiles.character={fields:{},wardrobe:[shirt,old,pants,shoe]};b.profiles.persona={wardrobe:[garment('p-top','상의')]};b.current=outfit();b.extra.character=[extra];b.outfitMemory={character:{lastDressed:['shirt','pants','old-top'],beforeUndress:['old-top','extra-top']},persona:{lastDressed:[],beforeUndress:[]}};
+ b.history=[outfit()];b.checkpoints={old:{state:outfit(),extra:{character:[extra]}}};
+ const before=structuredClone(b.current),other=structuredClone(b.profiles.persona),fresh=garment('new-top','상의','polo shirt');replaceWardrobeCategory(b,'character','상의',[fresh]);
+ assert.deepEqual(b.current,before);assert.deepEqual(b.profiles.persona,other);assert.deepEqual(b.profiles.character.wardrobe.map(i=>i.id),['pants','shoe','new-top']);assert.deepEqual(b.extra.character.map(i=>i.id),['shirt']);assert.deepEqual(b.checkpoints,{});assert.deepEqual(b.history,[]);assert.deepEqual(b.outfitMemory.character.beforeUndress,[]);assert.deepEqual(b.outfitMemory.character.lastDressed,['shirt','pants']);
+ assert.ok(!JSON.stringify(b).includes('old-top'));assert.ok(!JSON.stringify(b).includes('extra-top'));
 });

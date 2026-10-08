@@ -2,8 +2,9 @@ export const MAIN_WARDROBE={top:{label:'상의',category:'상의',counts:[4,7,10
 export const WARDROBE_TABS=[...Object.entries(MAIN_WARDROBE).map(([id,v])=>({id,...v})),{id:'underwear',label:'속옷',category:'속옷'},{id:'accessory',label:'액세서리·소품',category:'소품'}];
 export function wardrobeLevels(settings={}){
  const legacy=settings.wardrobeSize<=10?'low':settings.wardrobeSize>=24?'high':'medium';
- return Object.fromEntries(Object.keys(MAIN_WARDROBE).map(key=>[key,['low','medium','high'].includes(settings.wardrobeLevels?.[key])?settings.wardrobeLevels[key]:legacy]));
+ return Object.fromEntries(Object.keys(MAIN_WARDROBE).map(key=>[key,['low','medium','high'].includes(settings.wardrobeLevel)?settings.wardrobeLevel:['low','medium','high'].includes(settings.wardrobeLevels?.[key])?settings.wardrobeLevels[key]:legacy]));
 }
+export function wardrobeLevel(settings={}){const levels=Object.values(wardrobeLevels(settings));return [...levels].sort((a,b)=>levels.filter(v=>v===b).length-levels.filter(v=>v===a).length)[0];}
 export function wardrobeTargets(settings){const levels=wardrobeLevels(settings);return Object.fromEntries(Object.entries(MAIN_WARDROBE).map(([key,v])=>[key,v.counts[['low','medium','high'].indexOf(levels[key])]]));}
 export function ownedItems(branch,who){return [...new Map([...(branch.profiles[who]?.wardrobe||[]),...(branch.extra[who]||[]),...(branch.current.people[who]?.items||[])].map(item=>[item.id,item])).values()].filter(item=>item.available!==false);}
 const signature=item=>JSON.stringify([item.category,item.name?.trim().toLowerCase(),item.color?.trim().toLowerCase(),[...(item.features||[])].map(s=>s.trim().toLowerCase()).sort(),item.brand?.trim().toLowerCase()]);
@@ -18,8 +19,25 @@ export function composeWardrobe(existing,generated,targets){
 }
 export function wardrobeDeficits(profile,targets){
  return Object.fromEntries(Object.entries(MAIN_WARDROBE).flatMap(([key,v])=>{
+  if(!Number.isFinite(targets[key]))return [];
   if(profile.wardrobeExceptions?.[key])return [];
   const count=new Set((profile.wardrobe||[]).filter(i=>i.available!==false&&i.category===v.category).map(signature)).size,missing=Math.max(0,targets[key]-count);
   return missing?[[key,missing]]:[];
  }));
+}
+// Replacing stock does not change what the story currently says a person wears.
+// Rebase the timeline so discarded stock cannot return through an old checkpoint.
+export function replaceWardrobeCategory(branch,who,category,items,exception){
+ const profile=branch.profiles[who];
+ profile.wardrobe=[...(profile.wardrobe||[]).filter(i=>i.category!==category),...structuredClone(items)];
+ profile.wardrobeExceptions??={};
+ const key=WARDROBE_TABS.find(t=>t.category===category)?.id;
+ if(exception)profile.wardrobeExceptions[key]=exception;else delete profile.wardrobeExceptions[key];
+ const worn=branch.current.people[who].items.filter(i=>i.category===category);
+ branch.extra[who]=mergeWardrobe((branch.extra[who]||[]).filter(i=>i.category!==category),worn);
+ const allowed=new Set(ownedItems(branch,who).map(i=>i.id));
+ for(const memory of [branch.outfitMemory,branch.baseMemory])if(memory?.[who])for(const k of ['lastDressed','beforeUndress'])memory[who][k]=(memory[who][k]||[]).filter(id=>allowed.has(id));
+ branch.base=structuredClone(branch.current);branch.baseExtra=structuredClone(branch.extra);
+ branch.baseMemory=structuredClone(branch.outfitMemory||{});
+ branch.checkpoints={};branch.keys=[];branch.history=[];branch.outfits=[];
 }

@@ -1,10 +1,10 @@
 import {needsOutfitRead} from './scene-gate.js';
-import {wardrobeLevels,ownedItems} from './wardrobe.js';
+import {wardrobeLevel,ownedItems} from './wardrobe.js';
 
 export const KEY = 'kikki-closet:v1';
 export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'];
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
-export const DEFAULTS = {enabled:false,profileId:'',worlds:[],target:'both',fixed:false,wardrobeLevels:{top:'medium',bottom:'medium',outerwear:'medium',footwear:'medium'},newItems:'보통',variety:'보통',detail:2,brands:true,mascot:true,mascotLocked:false,auto:true,chatTurns:8};
+export const DEFAULTS = {enabled:false,profileId:'',worlds:[],target:'both',fixed:false,wardrobeLevel:'medium',newItems:'보통',variety:'보통',detail:2,brands:true,mascot:true,mascotLocked:false,auto:true,chatTurns:8};
 export const clone = x => structuredClone(x);
 export function branchId(){if(globalThis.crypto?.randomUUID)return crypto.randomUUID();const bytes=new Uint32Array(4);globalThis.crypto.getRandomValues(bytes);return 'branch-'+[...bytes].map(x=>x.toString(16).padStart(8,'0')).join('');}
 export const text = (x,n=400) => typeof x==='string'?x.replace(/<\/?kikki_outfit\b[^>]*>/gi,'').trim().slice(0,n):'';
@@ -61,13 +61,13 @@ export function updateOutfitMemory(previous,before,after){
 export function memoryFromStates(states){let memory={},before=emptyState();for(const state of states){memory=updateOutfitMemory(memory,before,state);before=state;}return updateOutfitMemory(memory,before,before);}
 export class Store {
  constructor(storage){this.storage=storage;this.epoch=0;this.data=this.load();}
- load(){const raw=this.storage.getItem(KEY);if(!raw)return {version:1,settings:clone(DEFAULTS),characters:{}};try{const d=JSON.parse(raw);if(d.version!==1||!d.characters||typeof d.characters!=='object')throw Error();d.settings={...DEFAULTS,...d.settings,wardrobeLevels:wardrobeLevels(d.settings)};delete d.settings.wardrobeSize;return d;}catch{throw Error('저장 데이터가 손상되었습니다. 데이터 관리에서 초기화하세요.');}}
+ load(){const raw=this.storage.getItem(KEY);if(!raw)return {version:1,settings:clone(DEFAULTS),characters:{}};try{const d=JSON.parse(raw);if(d.version!==1||!d.characters||typeof d.characters!=='object')throw Error();d.settings={...DEFAULTS,...d.settings,wardrobeLevel:wardrobeLevel(d.settings)};delete d.settings.wardrobeSize;delete d.settings.wardrobeLevels;return d;}catch{throw Error('저장 데이터가 손상되었습니다. 데이터 관리에서 초기화하세요.');}}
  save(){try{this.storage.setItem(KEY,JSON.stringify(this.data));}catch(error){this.invalidate();this.data=this.load();throw Error('저장 공간이 부족하거나 저장할 수 없습니다. 데이터 관리에서 정리하세요.',{cause:error});}}
  invalidate(){this.epoch++;}
  character(id){return this.data.characters[id];}
  createCharacter(id,name){this.data.characters[id]??={name,profiles:{},branches:{}};this.save();return this.character(id);}
  branch(id,bid){return this.character(id)?.branches[bid];}
- createBranch(id,name,copyFrom=null){const c=this.character(id);if(!c)throw Error('인물 분석을 먼저 시작하세요.');const bid=branchId();const copied=copyFrom?this.branch(id,copyFrom):null;c.branches[bid]={name:text(name,100)||'새 스토리',links:[],base:clone(copied?.current||emptyState()),current:clone(copied?.current||emptyState()),profiles:clone(copied?.profiles||c.profiles),analysisSources:clone(copied?.analysisSources||{targets:[],selected:{}}),extra:clone(copied?.extra||{character:[],persona:[]}),baseExtra:clone(copied?.extra||{character:[],persona:[]}),history:[],outfits:[],checkpoints:{},keys:[],outfitMemory:clone(copied?.outfitMemory||memoryFromStates([copied?.current||emptyState()])),baseMemory:clone(copied?.outfitMemory||memoryFromStates([copied?.current||emptyState()])),suspended:false};this.save();return bid;}
+ createBranch(id,name,copyFrom=null){const c=this.character(id);if(!c)throw Error('인물 분석을 먼저 시작하세요.');const bid=branchId();const copied=copyFrom?this.branch(id,copyFrom):null;c.branches[bid]={name:text(name,100)||'새 스토리',links:[],base:clone(copied?.current||emptyState()),current:clone(copied?.current||emptyState()),profiles:clone(copied?.profiles||c.profiles),reportTranslations:clone(copied?.reportTranslations||{}),analysisSources:clone(copied?.analysisSources||{targets:[],selected:{}}),extra:clone(copied?.extra||{character:[],persona:[]}),baseExtra:clone(copied?.extra||{character:[],persona:[]}),history:[],outfits:[],checkpoints:{},keys:[],outfitMemory:clone(copied?.outfitMemory||memoryFromStates([copied?.current||emptyState()])),baseMemory:clone(copied?.outfitMemory||memoryFromStates([copied?.current||emptyState()])),suspended:false};this.save();return bid;}
  bind(id,bid,chatId){for(const b of Object.values(this.character(id).branches))b.links=b.links.filter(x=>x!==chatId);const b=this.branch(id,bid);b.links.push(chatId);b.suspended=false;this.invalidate();this.save();}
  find(id,chatId){return Object.entries(this.character(id)?.branches||{}).find(([,b])=>b.links.includes(chatId));}
  deleteChat(id,chatId){const entry=this.find(id,chatId);if(!entry)return;const [bid,b]=entry;b.links=b.links.filter(x=>x!==chatId);if(!b.links.length)delete this.character(id).branches[bid];this.invalidate();this.save();}

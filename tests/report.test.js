@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {normalizeProfile,PROFILE_FIELDS,recentTurnStart,Store,Engine,itemDescription,itemBrandLabel,validateState} from '../core.js';
-import {translateReport} from '../profile-report.js';
+import {translateReport,translateWardrobeLabels} from '../profile-report.js';
 import {candidates} from '../prompts.js';
 
 test('기본 착장은 색과 이름만 표시하고 브랜드 누락을 구분',()=>{
@@ -51,4 +51,11 @@ test('영어 세계관에서도 시대와 문화권 후보를 구분',()=>{
  assert.equal(candidates(()=>0,make('Premodern Joseon Korea')).character.picks[0].type,'jeogori');
  assert.equal(candidates(()=>0,make('Pre-modern medieval Europe')).character.picks[0].type,'tunic');
  assert.equal(candidates(()=>0,make('Modern urban Japan')).character.picks[0].type,'henley shirt');
+});
+
+test('옷장 한글 라벨 번역은 짧은 이름과 색만 보내고 원문·소재·브랜드를 변경하지 않음',async()=>{
+ const items=[{id:'shirt',name:'Oxford shirt',color:'navy',features:['cotton twill'],brand:'UNIQLO'}],before=structuredClone(items);
+ const labels=await translateWardrobeLabels(items,async(system,data)=>{assert.match(system,/display only/);assert.deepEqual(data,{texts:['navy Oxford shirt']});return {texts:['남색 옥스퍼드 셔츠']};});
+ assert.deepEqual(labels,{shirt:'남색 옥스퍼드 셔츠'});assert.deepEqual(items,before);
+ await assert.rejects(translateWardrobeLabels(items,async()=>({texts:[]})),/영어 원문은 유지/);
 });

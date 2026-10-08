@@ -8,6 +8,20 @@ export function wardrobeLevel(settings={}){const levels=Object.values(wardrobeLe
 export function wardrobeTargets(settings){const levels=wardrobeLevels(settings);return Object.fromEntries(Object.entries(MAIN_WARDROBE).map(([key,v])=>[key,v.counts[['low','medium','high'].indexOf(levels[key])]]));}
 export function ownedItems(branch,who){const registry=new Map();for(const item of [...(branch.profiles[who]?.wardrobe||[]),...(branch.extra[who]||[]),...(branch.current.people[who]?.items||[])])registry.set(item.id,{...item,labelKo:item.labelKo||registry.get(item.id)?.labelKo||'',brandKo:item.brandKo||registry.get(item.id)?.brandKo||''});return [...registry.values()].filter(item=>item.available!==false);}
 export function requireKoreanLabels(items){if(items.some(item=>['labelKo','brandKo'].some(key=>typeof item[key]!=='string'||!/[가-힣]/.test(item[key])||/[A-Za-z]/.test(item[key])||item[key].length>120)))throw Error('생성된 의상의 한글 표시명이 누락됐습니다. 기존 데이터는 유지됩니다. 다시 생성해 주세요.');}
+const validLabel=value=>typeof value==='string'&&/[가-힣]/.test(value)&&!/[A-Za-z]/.test(value)&&value.length<=120;
+export function missingLabels(items){return items.filter(item=>!validLabel(item.labelKo)||!validLabel(item.brandKo));}
+// Display repairs keep the original worn garment and its established English identity.
+export function completeLabels(items,updates=[]){
+ const byId=new Map(updates.filter(item=>item&&typeof item.id==='string').map(item=>[item.id,item]));
+ return items.map(item=>{const update=byId.get(item.id);return {...item,labelKo:validLabel(item.labelKo)?item.labelKo:validLabel(update?.labelKo)?update.labelKo:'',brandKo:validLabel(item.brandKo)?item.brandKo:validLabel(update?.brandKo)?update.brandKo:''};});
+}
+export function applyLabels(branch,who,completed){
+ const byId=new Map(completed.map(item=>[item.id,item]));
+ const update=items=>{for(const item of items||[]){const value=byId.get(item.id);if(value){item.labelKo=value.labelKo;item.brandKo=value.brandKo;}}};
+ update(branch.profiles[who]?.wardrobe);update(branch.extra[who]);update(branch.baseExtra?.[who]);
+ for(const state of [branch.current,branch.base,...(branch.history||[])])update(state?.people[who]?.items);
+ for(const cp of Object.values(branch.checkpoints||{})){update(cp.extra?.[who]);update(cp.state?.people[who]?.items);for(const state of cp.history||[])update(state?.people[who]?.items);}
+}
 const signature=item=>JSON.stringify([item.category,item.name?.trim().toLowerCase(),item.color?.trim().toLowerCase(),[...(item.features||[])].map(s=>s.trim().toLowerCase()).sort(),item.brand?.trim().toLowerCase()]);
 export function mergeWardrobe(existing,added){
  const result=[...existing],ids=new Set(result.map(i=>i.id)),signatures=new Set(result.map(signature));

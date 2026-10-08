@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {wardrobeLevels,wardrobeTargets,wardrobeDeficits,ownedItems,composeWardrobe,replaceWardrobeCategory,requireKoreanLabels,mergeWardrobe} from '../wardrobe.js';
+import {wardrobeLevels,wardrobeTargets,wardrobeDeficits,ownedItems,composeWardrobe,replaceWardrobeCategory,requireKoreanLabels,mergeWardrobe,missingLabels,completeLabels,applyLabels} from '../wardrobe.js';
 import {Store,KEY,emptyState,Engine,memoryFromStates,updateOutfitMemory,outfitInjection,normalizeProfile,validateState,itemUiLabel,itemUiBrand} from '../core.js';
 import {needsOutfitRead} from '../scene-gate.js';
 import {SCENE,ANALYSIS,WARDROBE_FILL} from '../prompts.js';
@@ -78,4 +78,19 @@ test('일반 판독의 기존 표시명 보완은 영어 의상·기존 한글 �
 });
 test('의상 UI는 저장된 한글 표시만 사용하고 구버전 영어 원문을 화면에 노출하지 않음',()=>{
  const garment={category:'상의',name:'Oxford shirt',brand:'UNIQLO'};assert.equal(itemUiLabel(garment),'상의 · 표시명 준비 전');assert.equal(itemUiBrand(garment),'브랜드 표시 준비 전');assert.equal(itemUiLabel({...garment,labelKo:'남색 셔츠'}),'남색 셔츠');assert.equal(itemUiBrand({...garment,brandKo:'유니클로'}),'유니클로');assert.equal(itemUiLabel({...garment,labelKo:'navy 셔츠'}),'상의 · 표시명 준비 전');
+});
+test('옷장 재생성은 구버전 착용 옷의 표시만 보완하고 영어 원문·ID·착용을 유지',()=>{
+ const worn={...shirt,labelKo:'',brandKo:''},s=outfit();s.people.character.items=[worn];
+ const b={profiles:{character:{wardrobe:[structuredClone(worn)],wardrobeExceptions:{}}},current:s,base:structuredClone(s),extra:{character:[],persona:[]},baseExtra:{character:[],persona:[]},history:[structuredClone(s)],checkpoints:{old:{state:structuredClone(s),extra:{character:[structuredClone(worn)]},history:[]}},keys:['old'],outfits:[]};
+ const completed=completeLabels([worn],[{id:'shirt',name:'replacement',brand:'other',labelKo:'남색 셔츠',brandKo:'유니클로'}]);
+ assert.equal(missingLabels(completed).length,0);assert.equal(completed[0].name,worn.name);assert.equal(completed[0].brand,worn.brand);applyLabels(b,'character',completed);
+ for(const value of [b.current,b.base,...b.history,b.checkpoints.old.state])assert.equal(value.people.character.items[0].labelKo,'남색 셔츠');
+ replaceWardrobeCategory(b,'character','상의',[{...shirt,id:'new-shirt',labelKo:'흰색 셔츠',brandKo:'무지'}]);
+ assert.deepEqual(b.current.people.character.items.map(i=>i.id),['shirt']);assert.equal(ownedItems(b,'character').find(i=>i.id==='shirt').brandKo,'유니클로');assert.equal(itemUiLabel(b.current.people.character.items[0]),'남색 셔츠');
+});
+test('잘못된 보완 표시명은 저장하지 않으며 이미 유효한 표시명은 모델이 바꾸지 못함',()=>{
+ const old={...shirt,labelKo:'원래 셔츠',brandKo:''};const original=structuredClone(old);
+ const result=completeLabels([old],[{id:'shirt',labelKo:'바뀐 셔츠',brandKo:'UNIQLO'}]);
+ assert.deepEqual(old,original);assert.equal(result[0].labelKo,'원래 셔츠');assert.equal(missingLabels(result).length,1);assert.throws(()=>requireKoreanLabels(result),/한글 표시명/);
+ assert.equal(missingLabels([{...old,brandKo:'유니클로',labelKo:'English 셔츠'}]).length,1);
 });

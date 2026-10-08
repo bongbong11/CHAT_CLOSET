@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {wardrobeLevels,wardrobeTargets,wardrobeDeficits,ownedItems,composeWardrobe,replaceWardrobeCategory} from '../wardrobe.js';
-import {Store,KEY,emptyState,Engine,memoryFromStates,updateOutfitMemory,outfitInjection} from '../core.js';
+import {wardrobeLevels,wardrobeTargets,wardrobeDeficits,ownedItems,composeWardrobe,replaceWardrobeCategory,requireKoreanLabels,mergeWardrobe} from '../wardrobe.js';
+import {Store,KEY,emptyState,Engine,memoryFromStates,updateOutfitMemory,outfitInjection,normalizeProfile,validateState,itemUiLabel,itemUiBrand} from '../core.js';
 import {needsOutfitRead} from '../scene-gate.js';
 import {SCENE,ANALYSIS,WARDROBE_FILL} from '../prompts.js';
 const garment=(id,category,name=id)=>({id,category,name,color:'navy',features:['cotton'],brand:'UNIQLO',available:true});
@@ -61,4 +61,21 @@ test('한 인물의 선택 종류만 새 목록으로 교체하고 현재 옷과
  const before=structuredClone(b.current),other=structuredClone(b.profiles.persona),fresh=garment('new-top','상의','polo shirt');replaceWardrobeCategory(b,'character','상의',[fresh]);
  assert.deepEqual(b.current,before);assert.deepEqual(b.profiles.persona,other);assert.deepEqual(b.profiles.character.wardrobe.map(i=>i.id),['pants','shoe','new-top']);assert.deepEqual(b.extra.character.map(i=>i.id),['shirt']);assert.deepEqual(b.checkpoints,{});assert.deepEqual(b.history,[]);assert.deepEqual(b.outfitMemory.character.beforeUndress,[]);assert.deepEqual(b.outfitMemory.character.lastDressed,['shirt','pants']);
  assert.ok(!JSON.stringify(b).includes('old-top'));assert.ok(!JSON.stringify(b).includes('extra-top'));
+});
+import {toModelData,fromModelData} from '../model-schema.js';
+test('생성한 영어 의상과 한글 표시명은 같이 저장하고 모든 모델 요청·주입에서 표시명은 제외',()=>{
+ const g={...garment('g','상의','Oxford shirt'),labelKo:'남색 옥스퍼드 셔츠',brandKo:'유니클로'};
+ const profile=normalizeProfile({character:{wardrobe:[g]}}).character;assert.equal(profile.wardrobe[0].labelKo,g.labelKo);requireKoreanLabels(profile.wardrobe);
+ const s=outfit();s.people.character.items=[g];const payload={profiles:{character:profile},wardrobes:{character:[g]},baseline:{...s,sceneKo:{place:'집'}},recent:[s]};const model=toModelData(payload);
+ assert.doesNotMatch(JSON.stringify(model),/labelKo|brandKo|sceneKo|남색 옥스퍼드|유니클로/);assert.equal(model.wardrobes.character[0].name,'Oxford shirt');assert.match(outfitInjection(s),/navy Oxford shirt/);assert.doesNotMatch(outfitInjection(s),/남색/);
+ assert.equal(fromModelData({wardrobe:[g]}).wardrobe[0].labelKo,g.labelKo);assert.throws(()=>requireKoreanLabels([{...g,labelKo:''}]),/한글 표시명/);
+ const merged=mergeWardrobe([{...g,labelKo:''}],[{...g,name:'changed canonical name'}]);assert.equal(merged[0].name,'Oxford shirt');assert.equal(merged[0].labelKo,g.labelKo);
+});
+test('일반 판독의 기존 표시명 보완은 영어 의상·기존 한글 표시명을 바꾸지 않음',()=>{
+ const g=garment('g','상의','Oxford shirt');const raw={people:{character:{nude:false,items:['g']},persona:{nude:false,items:[]}},labelUpdates:{character:[{id:'g',labelKo:'남색 옥스퍼드 셔츠',brandKo:'유니클로'}]},newItems:{}};
+ const result=validateState(raw,{character:[g],persona:[]});assert.equal(result.state.people.character.items[0].name,'Oxford shirt');assert.equal(result.state.people.character.items[0].labelKo,'남색 옥스퍼드 셔츠');assert.equal(result.added.character[0].id,'g');
+ const existing={...g,labelKo:'기존 셔츠'};assert.equal(validateState(raw,{character:[existing],persona:[]}).state.people.character.items[0].labelKo,'기존 셔츠');
+});
+test('의상 UI는 저장된 한글 표시만 사용하고 구버전 영어 원문을 화면에 노출하지 않음',()=>{
+ const garment={category:'상의',name:'Oxford shirt',brand:'UNIQLO'};assert.equal(itemUiLabel(garment),'상의 · 표시명 준비 전');assert.equal(itemUiBrand(garment),'브랜드 표시 준비 전');assert.equal(itemUiLabel({...garment,labelKo:'남색 셔츠'}),'남색 셔츠');assert.equal(itemUiBrand({...garment,brandKo:'유니클로'}),'유니클로');assert.equal(itemUiLabel({...garment,labelKo:'navy 셔츠'}),'상의 · 표시명 준비 전');
 });

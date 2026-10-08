@@ -10,7 +10,7 @@ const inbound={fields,category:categories,certainty,source};
 function convert(value,maps){
  if(Array.isArray(value))return value.map(v=>convert(v,maps));
  if(!value||typeof value!=='object')return value;
- return Object.fromEntries(Object.entries(value).map(([key,v])=>{
+ return Object.fromEntries(Object.entries(value).filter(([key])=>maps!==outbound||!['labelKo','brandKo','sceneKo'].includes(key)).map(([key,v])=>{
   if(key==='fields'&&v&&typeof v==='object'&&!Array.isArray(v))return [key,Object.fromEntries(Object.entries(v).map(([name,field])=>[maps.fields[name]||name,convert(field,maps)]))];
   if(typeof v==='string'&&maps[key])return [key,maps[key][v]||v];
   return [key,convert(v,maps)];

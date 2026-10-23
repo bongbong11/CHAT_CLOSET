@@ -15,7 +15,7 @@ const object=value=>value&&typeof value==='object'&&!Array.isArray(value);
 // It is removed only after every character write/deletion has been verified.
 export class ServerStorage {
  constructor({fetch:request=(...args)=>globalThis.fetch(...args),headers,legacy,onChange=()=>{},onStatus=()=>{}}){
-  Object.assign(this,{request,headers,legacy,onChange,onStatus});this.remote=null;this.value=null;this.pending=undefined;this.job=null;this.error=null;this.ready=false;this.status='서버 저장소 연결 중';this.legacyAvailable=false;this.cache=new Map();this.attempt=null;
+  Object.assign(this,{request,headers,legacy,onChange,onStatus});this.remote=null;this.value=null;this.pending=undefined;this.job=null;this.error=null;this.ready=false;this.status='서버 저장소 연결 중';this.legacyAvailable=false;this.cache=new Map();this.attempt=null;this.cleanupCandidates=[];this.deletedFiles=0;this.completedTransactions=0;
  }
  notify(status){this.status=status;this.onStatus(status);}
  characterPath(id){const file=this.remote?.manifest?.characters?.[id]?.file;return file?`user/files/${file}`:'';}
@@ -59,6 +59,14 @@ export class ServerStorage {
   if(String(result.path).replace(/^\//,'')!==`user/files/${name}`)throw Error('서버 저장 경로를 확인하지 못했습니다.');
  }
  async assertCurrent(manifest){const actual=await this.fetchFile(FILE_NAME);if(actual?.format!==2||actual.revision!==manifest.revision)throw conflict();return actual;}
+ async verifyFiles(names){
+  if(!names.length)return {};
+  if(names.some(name=>!characterFile(name)))throw Error('정리 대상 파일 경로가 잘못되었습니다.');
+  const response=await this.request('/api/files/verify',{method:'POST',credentials:'same-origin',headers:this.headers(),body:JSON.stringify({urls:names.map(name=>`user/files/${name}`)}),signal:AbortSignal.timeout(15000)});
+  if(!response.ok)throw Error('정리 대상 파일을 확인하지 못했습니다. 파일을 보존했습니다.');
+  const raw=await response.json();if(names.some(name=>typeof raw[`user/files/${name}`]!=='boolean'))throw Error('파일 확인 응답이 올바르지 않습니다. 파일을 보존했습니다.');
+  return Object.fromEntries(names.map(name=>[name,raw[`user/files/${name}`]]));
+ }
  async finishTransaction(manifest){
   if(!manifest.transaction)return manifest;
   const snapshot=manifest.transaction.snapshot;
@@ -68,15 +76,18 @@ export class ServerStorage {
    if(!equal(existing,expected)){await this.assertCurrent(manifest);await this.upload(expected,ref.file);if(!equal(await this.fetchFile(ref.file),expected))throw Error('캐릭터 파일 저장을 확인하지 못했습니다. 복구 정보를 유지합니다.');}
    this.cache.set(ref.file,expected);
   }
+  const exists=await this.verifyFiles(manifest.transaction.deletes);
   for(const name of manifest.transaction.deletes){
    await this.assertCurrent(manifest);
+   if(!exists[name]){this.cache.delete(name);continue;}
    const response=await this.request('/api/files/delete',{method:'POST',credentials:'same-origin',headers:this.headers(),body:JSON.stringify({path:`user/files/${name}`}),signal:AbortSignal.timeout(15000)});
-   if((!response.ok&&response.status!==404)||await this.fetchFile(name)!==null)throw Error('캐릭터 저장 파일 삭제를 완료하지 못했습니다. 다시 연결하면 정리를 재시도합니다.');
-   this.cache.delete(name);
+   if((!response.ok&&response.status!==404)||(await this.verifyFiles([name]))[name])throw Error('캐릭터 저장 파일 삭제를 완료하지 못했습니다. 다시 연결하면 정리를 재시도합니다.');
+   this.cache.delete(name);this.deletedFiles++;
   }
   const current=await this.assertCurrent(manifest);if(!current.transaction)return current;
   const clean={...manifest};delete clean.transaction;
   await this.upload(clean);if(!equal(await this.fetchFile(FILE_NAME),clean))throw conflict();
+  this.completedTransactions++;
   return clean;
  }
  async init(){
@@ -110,16 +121,16 @@ export class ServerStorage {
    let latest=await this.fetchRemote();
    if(this.attempt&&latest?.revision===this.attempt.revision&&equal(latest.data,this.attempt.data))this.remote=latest;
    if(!same(latest,this.remote)){
-    this.pending=undefined;this.attempt=null;this.remote=latest;this.value=latest?.data??null;if(latest?.data===null)this.clearLegacy();this.onChange();
+    this.pending=undefined;this.cleanupCandidates=[];this.attempt=null;this.remote=latest;this.value=latest?.data??null;if(latest?.data===null)this.clearLegacy();this.onChange();
     throw Error('다른 기기에서 변경된 내용을 불러왔습니다. 다시 확인한 뒤 작업하세요.');
    }
    if(latest?.manifest?.transaction){await this.finishTransaction(latest.manifest);latest=await this.fetchRemote();this.remote=latest;}
    const data=this.pending;this.pending=undefined;
-   if(latest?.format===2&&equal(data,latest.data)){this.attempt=null;continue;}
+   if(latest?.format===2&&equal(data,latest.data)&&!this.cleanupCandidates.length){this.attempt=null;continue;}
    const previous=latest?.manifest?.characters||{},characters=Object.fromEntries(Object.entries(data?.characters||{}).map(([id,character])=>{
     const ref=previous[id];return [id,{file:ref?.file||`kikki-closet-character-${branchId()}.json`,revision:ref&&equal(character,latest.data?.characters[id])?ref.revision:branchId()}];
    }));
-   const used=new Set(Object.values(characters).map(ref=>ref.file)),deletes=Object.values(previous).map(ref=>ref.file).filter(file=>!used.has(file));
+   const used=new Set(Object.values(characters).map(ref=>ref.file)),deletes=[...new Set([...Object.values(previous).map(ref=>ref.file),...this.cleanupCandidates])].filter(file=>!used.has(file));
    const manifest={format:2,revision:branchId(),data:data===null?null:{...data,characters:{}},characters,transaction:{snapshot:data,deletes}};
    // Commit a recoverable snapshot before touching stable character files or deleting any.
    try{
@@ -127,10 +138,10 @@ export class ServerStorage {
     await this.upload(manifest);const committed=await this.fetchRemote();
     if(committed?.revision!==manifest.revision||!equal(committed.data,data))throw conflict();
     this.remote=committed;
-    await this.finishTransaction(manifest);this.remote=await this.fetchRemote();this.attempt=null;if(data===null)this.clearLegacy();
+    await this.finishTransaction(manifest);this.remote=await this.fetchRemote();this.attempt=null;this.cleanupCandidates=[];if(data===null)this.clearLegacy();
    }catch(error){
     const actual=await this.fetchRemote().catch(()=>null);
-    if(actual&&actual.revision!==latest?.revision&&actual.revision!==manifest.revision){this.pending=undefined;this.attempt=null;this.remote=actual;this.value=actual.data;if(actual.data===null)this.clearLegacy();this.onChange();throw conflict();}
+    if(actual&&actual.revision!==latest?.revision&&actual.revision!==manifest.revision){this.pending=undefined;this.cleanupCandidates=[];this.attempt=null;this.remote=actual;this.value=actual.data;if(actual.data===null)this.clearLegacy();this.onChange();throw conflict();}
     if(actual?.revision===manifest.revision&&equal(actual.data,data))this.remote=actual;
     if(this.pending===undefined)this.pending=data;throw error;
    }
@@ -149,6 +160,21 @@ export class ServerStorage {
  async retry(){
   if(!this.ready){await this.init();if(this.error)throw this.error;this.onChange();return;}
   this.error=null;if(this.pending!==undefined){this.start();await this.flush();}else await this.pull();
+ }
+ async cleanup(){
+  const files=this.deletedFiles,transactions=this.completedTransactions;
+  await this.retry();await this.pull();
+  const used=new Set(Object.values(this.remote?.manifest?.characters||{}).map(ref=>ref.file));
+  const candidates=[...this.cache.keys()].filter(name=>characterFile(name)&&!used.has(name)),exists=await this.verifyFiles(candidates);let skipped=0;
+  for(const name of candidates){
+   if(!exists[name]){this.cache.delete(name);continue;}
+   let record;try{record=await this.fetchFile(name);}catch(error){if(error instanceof SyntaxError){skipped++;continue;}throw error;}
+   if(record?.format!==1||record.characterId!==this.cache.get(name)?.characterId||!object(record.data?.profiles)||!object(record.data?.branches)){skipped++;continue;}
+   this.cleanupCandidates.push(name);
+  }
+  if(this.value===null)this.removeItem(KEY);else this.setItem(KEY,JSON.stringify(this.value));await this.flush();
+  const live=new Set(Object.values(this.remote?.manifest?.characters||{}).map(ref=>ref.file));for(const name of this.cache.keys())if(!live.has(name))this.cache.delete(name);
+  return {files:this.deletedFiles-files,transactions:this.completedTransactions-transactions,skipped};
  }
  async importLegacy(){
   await this.pull();const raw=this.legacy?.getItem(KEY);if(!raw)return;

@@ -1,7 +1,7 @@
 import {getContext} from '../../../extensions.js';
 import {ConnectionManagerRequestService} from '../../shared.js';
 import * as worldInfo from '../../../world-info.js';
-import {Store,Engine,normalizeProfile,clone,outfitText,prefixKeys,outfitInjection,savedOutfitForMessages,updateOutfitMemory,memoryFromStates,hash} from './core.js';
+import {Store,Engine,normalizeProfile,clone,outfitText,prefixKeys,outfitInjection,savedOutfitForMessages,updateOutfitMemory,memoryFromStates,hash,compactStoredData} from './core.js';
 import {ANALYSIS,SCENE,WARDROBE_FILL,WARDROBE_REBUILD,WARDROBE_LABELS,candidates} from './prompts.js';
 import {createHost,injectPayload} from './host.js';
 import {createUI} from './ui.js';
@@ -19,14 +19,14 @@ const settings=()=>store.data.settings;
 const engine=new Engine(store,async(system,data,signal)=>{const raw=await host.request(settings().profileId,system,data,signal,'scene');requireKoreanLabels(Object.values(raw.newItems||{}).flat());return raw;});
 let analysisController=null,backgroundTask='',deferredRead=false,deferredForce=false,revision=0,timer=null,prepared=null,pending=false,injectionError='',runningRead=null,readId=0,generating=false;
 const cancel=()=>{revision++;readId++;engine.cancel();analysisController?.abort();analysisController=null;backgroundTask='';deferredRead=false;deferredForce=false;runningRead=null;pending=false;prepared=null;clearTimeout(timer);timer=null;ui.toast(false);};
-function startTask(label){
+function startTask(label,{notify=true}={}){
  if(analysisController)throw Error('진행 중인 작업이 있습니다. 창을 닫고 채팅하면서 기다릴 수 있습니다.');
  const catchUp=!!runningRead||!!timer;cancel();deferredRead=catchUp;
- const controller=new AbortController();analysisController=controller;backgroundTask=label;ui.toast(true);ui.refresh();return controller;
+ const controller=new AbortController();analysisController=controller;backgroundTask=label;if(notify)ui.toast(true);ui.refresh();return controller;
 }
 function finishTask(controller){if(analysisController!==controller)return;analysisController=null;backgroundTask='';ui.toast(false);ui.refresh();if(deferredRead)schedule();}
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
-const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,settings:settings(),injectionError,pending,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
+const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,settings:settings(),injectionError,pending,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
  await storage.pull();
  const v=current();if(!settings().enabled||!v||v.b.suspended)return v?.b.current||null;
@@ -144,9 +144,21 @@ async function translateProfile(who,profile){
   store.save();await storage.flush();return translated;
  }finally{finishTask(controller);}
 }
+async function cleanup(){
+ if(generating||analysisController||runningRead)throw Error('채팅 생성·의상 작업이 끝난 뒤 정리해 주세요.');
+ const controller=startTask('불필요한 데이터 정리 중',{notify:false}),context=host.context(),identity=host.identity(),chat=context.chat;
+ try{
+  const result=await storage.cleanup();if(controller.signal.aborted)return {cancelled:true};
+  const compact=compactStoredData(store.data);if(compact.total){store.data=compact.data;store.save();await storage.flush();}
+  if(controller.signal.aborted)return {cancelled:true};
+  const sameChat=host.context().chat===chat&&host.identity()?.id===identity?.id&&host.identity()?.chat===identity?.chat;
+  const messages=!generating&&sameChat?await sanitizeSavedOutputs(getContext,{report:true,onlyInternal:true}):{messages:0,swipes:0};
+  ui.refresh();return {...result,records:compact.total,messages:messages.messages,swipes:messages.swipes,chatSkipped:generating||!sameChat};
+ }finally{finishTask(controller);}
+}
 async function newBranch(mode,name,bid){await storage.pull();cancel();const i=host.identity();if(!i)throw Error('캐릭터 채팅을 여세요.');if(!store.character(i.id))throw Error('취향 분석을 먼저 실행하세요.');let target=bid;if(mode==='existing'&&store.branch(i.id,bid)?.personaKey&&store.branch(i.id,bid).personaKey!==i.personaKey)throw Error('이 브랜치의 페르소나가 다릅니다. 새 브랜치를 만들어 분석하세요.');if(mode!=='existing')target=store.createBranch(i.id,name,mode==='copy'?current()?.bid:null);const targetBranch=store.branch(i.id,target);if(mode!=='existing'&&store.character(i.id).personaKey!==i.personaKey){delete targetBranch.profiles.persona;delete targetBranch.reportTranslations.persona;targetBranch.current.people.persona={nude:false,items:[]};targetBranch.base.people.persona={nude:false,items:[]};targetBranch.extra.persona=[];targetBranch.baseExtra.persona=[];targetBranch.outfitMemory.persona={lastDressed:[],beforeUndress:[]};targetBranch.baseMemory.persona={lastDressed:[],beforeUndress:[]};}store.bind(i.id,target,i.chat);store.branch(i.id,target).personaKey=i.personaKey;store.save();ui.refresh();}
 const ui=createUI({base:new URL('.',import.meta.url),state,profiles:()=>host.profiles(),sheet:kind=>host.sheet(kind),lore:kind=>host.lore(kind),analyze,refillWardrobe,read:()=>read(undefined,true),newBranch,
- flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),
+ flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),cleanup,
  translateProfile,
  saveReportTranslation(who,source,translated,language){const v=current();if(!v||hash(JSON.stringify(v.b.profiles[who]?.fields))!==hash(JSON.stringify(source.fields)))return;v.b.reportTranslations??={};if(translated)v.b.reportTranslations[who]={signature:hash(JSON.stringify(source.fields)),fields:Object.fromEntries(Object.entries(translated.fields).map(([key,field])=>[key,{value:field.value,evidence:field.evidence}])),language};else if(v.b.reportTranslations[who])v.b.reportTranslations[who].language=language;store.save();},
  updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked','profileId'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},

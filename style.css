@@ -87,4 +87,5 @@
 /* Keep frequent controls easy to touch without enlarging every wardrobe button. */
 .kc-dialog button.icon,.kc-bubble button.icon{font-size:20px;min-width:34px;min-height:34px;padding:4px 7px;display:inline-flex;align-items:center;justify-content:center;flex:none}
 .kc-storage-file{overflow-wrap:anywhere;word-break:break-word}
+.kc-delete-options{display:grid;gap:8px}.kc-delete-options .kc-muted{margin:3px 0 0;line-height:1.5}.kc-cleanup-result{overflow-wrap:anywhere}
 @media(max-width:600px){.kc-dialog button.icon,.kc-bubble button.icon{font-size:20px;min-width:36px;min-height:36px;padding:4px 7px}.kc-dialog .kc-nav-tools{gap:4px}}

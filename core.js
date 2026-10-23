@@ -6,6 +6,15 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',worlds:[],target:'both',fixed:false,wardrobeLevel:'medium',newItems:'보통',variety:'보통',detail:2,brands:true,mascot:true,mascotLocked:false,auto:true,chatTurns:8};
 export const clone = x => structuredClone(x);
+export function compactStoredData(source){
+ const data=clone(source),removed={translations:0,history:0,outfits:0,checkpoints:0};
+ for(const character of Object.values(data.characters))for(const branch of Object.values(character.branches)){
+  for(const who of ['character','persona'])if(branch.reportTranslations?.[who]&&(!branch.profiles?.[who]||branch.reportTranslations[who].signature!==hash(JSON.stringify(branch.profiles[who].fields)))){delete branch.reportTranslations[who];removed.translations++;}
+  for(const [key,limit] of [['history',5],['outfits',10]])if(Array.isArray(branch[key])&&branch[key].length>limit){removed[key]+=branch[key].length-limit;branch[key]=branch[key].slice(-limit);}
+  if(branch.checkpoints){const keys=Object.keys(branch.checkpoints);for(const key of keys.slice(0,Math.max(0,keys.length-80))){delete branch.checkpoints[key];removed.checkpoints++;}}
+ }
+ return {data,removed,total:Object.values(removed).reduce((sum,n)=>sum+n,0)};
+}
 export function branchId(){if(globalThis.crypto?.randomUUID)return crypto.randomUUID();const bytes=new Uint32Array(4);globalThis.crypto.getRandomValues(bytes);return 'branch-'+[...bytes].map(x=>x.toString(16).padStart(8,'0')).join('');}
 export const text = (x,n=400) => typeof x==='string'?x.replace(/<\/?kikki_outfit\b[^>]*>/gi,'').trim().slice(0,n):'';
 export function emptyState(){return {scene:{time:'불명',place:'불명',activity:'불명',weather:'불명'},people:{character:{nude:false,items:[]},persona:{nude:false,items:[]}}};}

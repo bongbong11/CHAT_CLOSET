@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ServerStorage,FILE_NAME,FILE_PATH} from '../server-storage.js';
-import {Store,KEY} from '../core.js';
+import {Store,KEY,compactStoredData,hash} from '../core.js';
 import {visibleBounds,clampMascot,restoreMascot,rememberMascot} from '../mascot-position.js';
+import {sanitizeSavedOutputs} from '../output-guard.js';
 
 const memory=()=>{const map=new Map();return {getItem:k=>map.get(k)??null,setItem:(k,v)=>map.set(k,v),removeItem:k=>map.delete(k)};};
 function server(){
@@ -11,6 +12,7 @@ function server(){
  s.data=()=>{const r=s.record;if(!r)return null;if(r.format===1)return r.data;if(r.transaction)return r.transaction.snapshot;if(r.data===null)return null;return {...r.data,characters:Object.fromEntries(Object.entries(r.characters).map(([id,ref])=>[id,s.files.get(ref.file)?.data]))};};
  s.fetch=async(url,options={})=>{
   if(url.startsWith('/user/files/')){if(s.readsFail)return new Response('',{status:503});const file=s.files.get(url.slice('/user/files/'.length));return file?Response.json(file):new Response('',{status:404});}
+  if(url==='/api/files/verify'){const {urls}=JSON.parse(options.body);return Response.json(Object.fromEntries(urls.map(path=>[path,s.files.has(path.slice('user/files/'.length))])));}
   if(url==='/api/files/delete'){const {path}=JSON.parse(options.body);if(s.failDelete)return new Response('',{status:503});const name=path.slice('user/files/'.length);s.deletes.push(name);return new Response('',{status:s.files.delete(name)?200:404});}
   assert.equal(url,'/api/files/upload');assert.equal(options.headers['Content-Type'],'application/json');
   if(s.fail)return new Response('',{status:503});
@@ -98,4 +100,28 @@ test('손상된 파일 경로나 복구 삭제 목록으로 의상실 외 파일
 test('서버는 저장했지만 응답이 끊긴 경우 자기 저장을 다른 기기 충돌로 오인하지 않고 복구',async()=>{
  const s=server(),request=s.fetch;let lose=true;s.fetch=async(url,options)=>{const response=await request(url,options);if(lose&&url==='/api/files/upload'){lose=false;throw Error('connection lost after commit');}return response;};
  const pc=await s.client(),p=new Store(pc);p.createCharacter('c','C');await assert.rejects(pc.flush(),/connection lost/);assert.ok(s.record.transaction);const ref=structuredClone(s.record.characters.c);await pc.retry();assert.equal(pc.error,null);assert.deepEqual(s.record.characters.c,ref);assert.equal(s.record.transaction,undefined);assert.equal(new Store(pc).character('c').name,'C');assert.equal(s.files.size,2);
+});
+test('정리는 알려진 미사용 파일만 지우고 사용 중인 캐릭터·공용 파일과 소유 미확인 파일을 보존',async()=>{
+ const s=server(),pc=await s.client(),p=new Store(pc);p.createCharacter('c','C');await pc.flush();const active=s.record.characters.c.file,activeContents=JSON.stringify(s.files.get(active));
+ const orphan='kikki-closet-character-orphan.json',mismatch='kikki-closet-character-other.json',missing='kikki-closet-character-gone.json';
+ const old={format:1,characterId:'old',revision:'old',data:{name:'Old',profiles:{},branches:{}}};s.files.set(orphan,old);pc.cache.set(orphan,old);pc.cache.set(missing,old);pc.cache.set(mismatch,old);s.files.set(mismatch,{...old,characterId:'not-owned'});s.files.set('unrelated.json',{user:'file'});
+ const result=await pc.cleanup();assert.equal(result.files,1);assert.equal(result.skipped,1);assert.equal(s.files.has(orphan),false);assert.equal(JSON.stringify(s.files.get(active)),activeContents);assert.equal(s.files.has(mismatch),true);assert.equal(s.files.has('unrelated.json'),true);assert.deepEqual(s.deletes,[orphan]);assert.equal(s.record.transaction,undefined);assert.deepEqual(new Store(pc).data,p.data);
+ const again=await pc.cleanup();assert.equal(again.files,0);assert.equal(again.transactions,0);
+});
+test('정리 중 파일 삭제 실패는 삭제 대기 정보를 남기고 재접속·재정리로 완료',async()=>{
+ const s=server(),pc=await s.client(),p=new Store(pc);p.createCharacter('c','C');await pc.flush();const name='kikki-closet-character-unused.json',record={format:1,characterId:'unused',revision:'r',data:{profiles:{},branches:{}}};s.files.set(name,record);pc.cache.set(name,record);s.failDelete=true;
+ await assert.rejects(pc.cleanup(),/삭제를 완료하지 못/);assert.deepEqual(s.record.transaction.deletes,[name]);assert.equal(s.files.has(name),true);s.failDelete=false;const result=await pc.cleanup();assert.equal(result.files,1);assert.equal(s.record.transaction,undefined);assert.equal(s.files.has(name),false);assert.equal(new Store(pc).character('c').name,'C');
+});
+test('보관 한도 초과 기록과 만료 번역만 정리하며 옷장·착장·복원 정보와 유효 번역은 보존',()=>{
+ const p=new Store(memory());p.createCharacter('c','C');const bid=p.createBranch('c','Story'),b=p.branch('c',bid);b.profiles.character={fields:{style:{value:'Quiet'}},wardrobe:[{id:'worn',name:'shirt'}]};b.current.people.character.items=[{id:'worn'}];b.extra.character=[{id:'owned-but-unworn'}];b.outfitMemory={character:{lastDressed:['worn'],beforeUndress:['worn']}};
+ b.reportTranslations={character:{signature:hash(JSON.stringify(b.profiles.character.fields)),fields:{style:{value:'차분함'}}},persona:{signature:'stale',fields:{}}};b.history=Array.from({length:8},(_,i)=>({scene:i}));b.outfits=Array.from({length:12},(_,i)=>String(i));b.checkpoints=Object.fromEntries(Array.from({length:83},(_,i)=>['snapshot-'+i,{state:i}]));
+ const before=structuredClone(p.data),result=compactStoredData(p.data),next=result.data.characters.c.branches[bid];assert.deepEqual(p.data,before);assert.deepEqual(result.removed,{translations:1,history:3,outfits:2,checkpoints:3});assert.deepEqual(next.profiles,b.profiles);assert.deepEqual(next.current,b.current);assert.deepEqual(next.extra,b.extra);assert.deepEqual(next.outfitMemory,b.outfitMemory);assert.deepEqual(next.reportTranslations.character,b.reportTranslations.character);assert.equal(next.reportTranslations.persona,undefined);assert.deepEqual(next.history,b.history.slice(-5));assert.equal(Object.keys(next.checkpoints).length,80);assert.equal(compactStoredData(result.data).total,0);
+});
+test('수동 채팅 정리는 내부 태그만 제거하고 사용자 원문·일반 서식·스와이프를 보존',async()=>{
+ const c={chat:[{is_user:true,mes:'<kikki_outfit>user example</kikki_outfit>'},{is_user:false,mes:'Normal ```text\n```'},{is_user:false,mes:'Story<kikki_outfit>hidden</kikki_outfit>',swipes:['Another story','Second<kikki_outfit>hidden</kikki_outfit>']}],saveChat:async()=>{}};
+ const result=await sanitizeSavedOutputs(()=>c,{report:true,onlyInternal:true});assert.deepEqual(result,{changed:true,messages:1,swipes:1});assert.equal(c.chat[0].mes,'<kikki_outfit>user example</kikki_outfit>');assert.equal(c.chat[1].mes,'Normal ```text\n```');assert.equal(c.chat[2].mes,'Story');assert.deepEqual(c.chat[2].swipes,['Another story','Second']);
+});
+test('채팅 정리 저장 실패는 성공으로 표시하지 않고 편집 전 메시지·스와이프로 복구',async()=>{
+ const c={chat:[{is_user:false,mes:'Story<kikki_outfit>hidden</kikki_outfit>',swipes:['Alt<kikki_outfit>hidden</kikki_outfit>']}],saveChat:async()=>{throw Error('save failed');}},before=structuredClone(c.chat);
+ await assert.rejects(sanitizeSavedOutputs(()=>c,{report:true,onlyInternal:true}),/save failed/);assert.deepEqual(c.chat,before);
 });

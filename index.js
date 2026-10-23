@@ -26,7 +26,7 @@ function startTask(label){
 }
 function finishTask(controller){if(analysisController!==controller)return;analysisController=null;backgroundTask='';ui.toast(false);ui.refresh();if(deferredRead)schedule();}
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
-const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,settings:settings(),injectionError,pending,backgroundTask,storageStatus:storage.status,legacyAvailable:storage.legacyAvailable};};
+const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,settings:settings(),injectionError,pending,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
  await storage.pull();
  const v=current();if(!settings().enabled||!v||v.b.suspended)return v?.b.current||null;
@@ -51,11 +51,11 @@ async function analyze(selection){
  const who=targets[0],sources=selection.sources?.[who];
  if(!sources?.sheet?.source&&!sources?.lore?.length)throw Error('선택한 대상의 시트나 로어북 엔트리를 먼저 가져오세요.');
  const i=host.identity();if(!i)throw Error('개별 캐릭터 채팅을 먼저 여세요.');
- const controller=startTask('취향 분석 중'),signal=controller.signal,rev=revision,epoch=store.epoch;
+ const profileId=settings().profileId,controller=startTask('취향 분석 중'),signal=controller.signal,rev=revision,epoch=store.epoch;
  try{
   const existing=current()?.b,oldProfile=existing?.profiles[who],existingWardrobe=existing?ownedItems(existing,who):[],targetsByCategory=wardrobeTargets(settings());
   const data={targets:[who],sources:{[who]:sources},fixedOutfit:settings().fixed,wardrobeTargets:targetsByCategory,existingWardrobe};
-  const raw=await host.request(settings().profileId,ANALYSIS,data,signal,'analysis');
+  const raw=await host.request(profileId,ANALYSIS,data,signal,'analysis');
   if(signal.aborted||rev!==revision||epoch!==store.epoch||host.identity()?.id!==i.id||host.identity()?.chat!==i.chat||host.identity()?.personaKey!==i.personaKey)return false;
   if(!raw[who])throw Error('선택한 대상의 분석 결과가 빠져 있습니다. 다시 분석해 주세요.');
   const result=normalizeProfile({[who]:raw[who]})[who];requireKoreanLabels(result.wardrobe);
@@ -63,7 +63,7 @@ async function analyze(selection){
   result.wardrobe=composeWardrobe(existingWardrobe,result.wardrobe,targetsByCategory);
   const missing=wardrobeDeficits(result,targetsByCategory);
   if(Object.keys(missing).length){
-   const fill=await host.request(settings().profileId,WARDROBE_FILL,{target:who,profile:result,sources,existingWardrobe:result.wardrobe,wardrobeTargets:targetsByCategory,missingByCategory:missing},signal,'analysis');
+   const fill=await host.request(profileId,WARDROBE_FILL,{target:who,profile:result,sources,existingWardrobe:result.wardrobe,wardrobeTargets:targetsByCategory,missingByCategory:missing},signal,'analysis');
    const additions=normalizeProfile({[who]:{wardrobe:fill.wardrobe,wardrobeExceptions:fill.wardrobeExceptions}})[who];requireKoreanLabels(additions.wardrobe);
    const allowed=new Set(Object.keys(missing).map(key=>({top:'상의',bottom:'하의',outerwear:'겉옷',footwear:'신발'})[key]));
    if(additions.wardrobe.some(item=>!allowed.has(item.category)))throw Error('옷장 보완 응답에 요청하지 않은 종류가 포함됐습니다. 기존 옷장은 유지됩니다.');
@@ -91,7 +91,7 @@ async function refillWardrobe(who,categoryId='all'){
  if(!v||!expected||v.bid!==expected.bid||v.i.id!==expected.i.id||v.i.chat!==expected.i.chat)throw Error('채팅이나 브랜치가 바뀌었습니다. 옷장을 다시 여세요.');
  if(!['character','persona'].includes(who)||!categories.length||!v.b.profiles[who])throw Error('선택한 인물의 취향을 먼저 분석하세요.');
  if(v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('페르소나가 변경되었습니다. 새 브랜치를 만들거나 취향을 재분석하세요.');
- const controller=startTask('옷장 생성 중'),signal=controller.signal,rev=revision,epoch=store.epoch,processedKeys=[...v.b.keys];
+ const profileId=settings().profileId,controller=startTask('옷장 생성 중'),signal=controller.signal,rev=revision,epoch=store.epoch,processedKeys=[...v.b.keys];
  const valid=()=>!signal.aborted&&rev===revision&&epoch===store.epoch&&current()?.b===v.b&&host.identity()?.id===v.i.id&&host.identity()?.chat===v.i.chat&&host.identity()?.personaKey===v.i.personaKey;
  try{
   const profile=clone(v.b.profiles[who]);delete profile.wardrobe;
@@ -99,7 +99,7 @@ async function refillWardrobe(who,categoryId='all'){
   const selected=new Set(categories.map(t=>t.category)),scopedTargets=categoryId==='all'?targets:targetCount?{[categoryId]:targetCount}:{};
   const wornIds=new Set(v.b.current.people[who].items.map(i=>i.id)),retained=ownedItems(v.b,who).filter(i=>selected.has(i.category)&&wornIds.has(i.id)),retainedItems=missingLabels(retained);
   const previousDesigns=ownedItems(v.b,who).filter(i=>selected.has(i.category)).map(({name,color,brand})=>({name,color,brand}));
-  const raw=await host.request(settings().profileId,WARDROBE_REBUILD,{target:who,category:categoryId,targetCount,wardrobeTargets:scopedTargets,profile,previousDesigns,retainedItems,idPrefix,fixedOutfit:settings().fixed},signal,'analysis');
+  const raw=await host.request(profileId,WARDROBE_REBUILD,{target:who,category:categoryId,targetCount,wardrobeTargets:scopedTargets,profile,previousDesigns,retainedItems,idPrefix,fixedOutfit:settings().fixed},signal,'analysis');
   if(!valid())return false;
   const result=normalizeProfile({[who]:{wardrobe:raw.wardrobe,wardrobeExceptions:raw.wardrobeExceptions}})[who];requireKoreanLabels(result.wardrobe);
   if(result.wardrobe.some(i=>!selected.has(i.category)||!i.available))throw Error('요청한 카테고리와 다른 옷이 반환됐습니다. 기존 목록은 유지됩니다.');
@@ -107,7 +107,7 @@ async function refillWardrobe(who,categoryId='all'){
   result.wardrobe=composeWardrobe([],result.wardrobe,targets);
   const missing=wardrobeDeficits(result,scopedTargets);
   if(Object.keys(missing).length){
-   const fill=await host.request(settings().profileId,WARDROBE_FILL,{target:who,profile,existingWardrobe:result.wardrobe,wardrobeTargets:scopedTargets,missingByCategory:missing,idPrefix},signal,'analysis');
+   const fill=await host.request(profileId,WARDROBE_FILL,{target:who,profile,existingWardrobe:result.wardrobe,wardrobeTargets:scopedTargets,missingByCategory:missing,idPrefix},signal,'analysis');
    if(!valid())return false;
    const additions=normalizeProfile({[who]:{wardrobe:fill.wardrobe,wardrobeExceptions:fill.wardrobeExceptions}})[who];requireKoreanLabels(additions.wardrobe);
    const allowed=new Set(WARDROBE_TABS.filter(t=>Object.hasOwn(missing,t.id)).map(t=>t.category));
@@ -118,7 +118,7 @@ async function refillWardrobe(who,categoryId='all'){
   if(Object.keys(wardrobeDeficits(result,scopedTargets)).length||(!Object.keys(scopedTargets).length&&!result.wardrobe.length&&!String(raw.emptyReason||'').trim()))throw Error('모델이 옷장 목록을 완성하지 못했습니다. 기존 목록은 유지됩니다.');
   let completed=completeLabels(retained,Array.isArray(raw.labelUpdates)?raw.labelUpdates:[]);
   if(missingLabels(completed).length){
-   const repair=await host.request(settings().profileId,WARDROBE_LABELS,{retainedItems:missingLabels(completed)},signal,'analysis');
+   const repair=await host.request(profileId,WARDROBE_LABELS,{retainedItems:missingLabels(completed)},signal,'analysis');
    if(!valid())return false;
    completed=completeLabels(completed,Array.isArray(repair.labelUpdates)?repair.labelUpdates:[]);
   }
@@ -136,9 +136,9 @@ async function refillWardrobe(who,categoryId='all'){
 async function translateProfile(who,profile){
  await storage.pull();const v=current(),signature=hash(JSON.stringify(profile.fields));
  if(!v||hash(JSON.stringify(v.b.profiles[who]?.fields))!==signature)throw Error('보고서 원문이 바뀌었습니다. 저장된 보고서를 다시 여세요.');
- const controller=startTask('취향 번역 중'),rev=revision,epoch=store.epoch;
+ const profileId=settings().profileId,controller=startTask('취향 번역 중'),rev=revision,epoch=store.epoch;
  try{
-  const translated=await translateReport(profile,(system,data,signal)=>host.request(settings().profileId,system,data,signal,'translation'),controller.signal);
+  const translated=await translateReport(profile,(system,data,signal)=>host.request(profileId,system,data,signal,'translation'),controller.signal);
   if(controller.signal.aborted||rev!==revision||epoch!==store.epoch||current()?.b!==v.b||host.identity()?.personaKey!==v.i.personaKey||hash(JSON.stringify(v.b.profiles[who]?.fields))!==signature)return null;
   v.b.reportTranslations??={};v.b.reportTranslations[who]={signature,fields:Object.fromEntries(Object.entries(translated.fields).map(([key,field])=>[key,{value:field.value,evidence:field.evidence}])),language:'ko'};
   store.save();await storage.flush();return translated;
@@ -149,7 +149,7 @@ const ui=createUI({base:new URL('.',import.meta.url),state,profiles:()=>host.pro
  flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),
  translateProfile,
  saveReportTranslation(who,source,translated,language){const v=current();if(!v||hash(JSON.stringify(v.b.profiles[who]?.fields))!==hash(JSON.stringify(source.fields)))return;v.b.reportTranslations??={};if(translated)v.b.reportTranslations[who]={signature:hash(JSON.stringify(source.fields)),fields:Object.fromEntries(Object.entries(translated.fields).map(([key,field])=>[key,{value:field.value,evidence:field.evidence}])),language};else if(v.b.reportTranslations[who])v.b.reportTranslations[who].language=language;store.save();},
- updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},
+ updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked','profileId'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},
  saveProfiles(profiles){cancel();const v=current();if(!v)return;v.b.profiles=profiles;for(const who of ['character','persona'])if(v.b.reportTranslations?.[who]?.signature!==hash(JSON.stringify(profiles[who]?.fields)))delete v.b.reportTranslations?.[who];store.save();ui.refresh();},
  promote(){const v=current();if(!v)return;store.character(v.i.id).profiles=clone(v.b.profiles);store.save();},
  saveOutfit(people){cancel();const v=current();if(!v)return;v.b.outfitMemory=updateOutfitMemory(v.b.outfitMemory||memoryFromStates([v.b.base,...v.b.history,v.b.current]),v.b.current,{...v.b.current,people});v.b.current.people=people;v.b.base=clone(v.b.current);v.b.baseMemory=clone(v.b.outfitMemory);v.b.baseExtra=clone(v.b.extra);v.b.checkpoints={};v.b.keys=prefixKeys(host.messages());const last=v.b.keys.at(-1);if(last)v.b.checkpoints[last]={state:clone(v.b.current),extra:clone(v.b.extra),history:clone(v.b.history),outfits:clone(v.b.outfits),outfitMemory:clone(v.b.outfitMemory)};store.save();ui.refresh();},

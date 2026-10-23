@@ -3,36 +3,90 @@ import {KEY,Store,clone,branchId} from './core.js';
 export const FILE_NAME='kikki-closet-state.json';
 export const FILE_PATH=`user/files/${FILE_NAME}`;
 const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
-const validate=data=>{if(data===null)return null;new Store({getItem:()=>JSON.stringify(data)});return data;};
+const same=(a,b)=>a?.revision===b?.revision&&equal(a?.data,b?.data);
+const validate=data=>{if(data===null)return null;if(!object(data)||!object(data.settings)||!object(data.characters))throw Error('저장 데이터가 손상되었습니다. 기존 파일을 보존했습니다.');new Store({getItem:()=>JSON.stringify(data)});for(const value of Object.values(data.characters))if(!object(value)||!object(value.profiles)||!object(value.branches))throw Error('캐릭터 저장 데이터가 손상되었습니다. 기존 파일을 보존했습니다.');return data;};
 const encode=text=>{let binary='';for(const byte of new TextEncoder().encode(text))binary+=String.fromCharCode(byte);return btoa(binary);};
+export const characterFile=name=>/^kikki-closet-character-[a-z0-9-]+\.json$/.test(name);
+const conflict=()=>Error('다른 기기에서 변경된 내용을 불러왔습니다. 다시 확인한 뒤 작업하세요.');
+const object=value=>value&&typeof value==='object'&&!Array.isArray(value);
 
-// One account-scoped server file. No rolling files, browser data cache, or settings.json copy.
+// Settings/catalog + one stable file per character, independent of model/preset IDs.
+// A temporary snapshot in the catalog makes interrupted multi-file saves recoverable.
+// It is removed only after every character write/deletion has been verified.
 export class ServerStorage {
  constructor({fetch:request=(...args)=>globalThis.fetch(...args),headers,legacy,onChange=()=>{},onStatus=()=>{}}){
-  Object.assign(this,{request,headers,legacy,onChange,onStatus});this.remote=null;this.value=null;this.pending=undefined;this.job=null;this.error=null;this.ready=false;this.status='서버 저장소 연결 중';this.legacyAvailable=false;
+  Object.assign(this,{request,headers,legacy,onChange,onStatus});this.remote=null;this.value=null;this.pending=undefined;this.job=null;this.error=null;this.ready=false;this.status='서버 저장소 연결 중';this.legacyAvailable=false;this.cache=new Map();this.attempt=null;
  }
  notify(status){this.status=status;this.onStatus(status);}
- async fetchRemote(){
-  const response=await this.request(`/${FILE_PATH}`,{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(15000)});
+ characterPath(id){const file=this.remote?.manifest?.characters?.[id]?.file;return file?`user/files/${file}`:'';}
+ async fetchFile(name){
+  if(name!==FILE_NAME&&!characterFile(name))throw Error('의상실 저장 파일 경로가 잘못되었습니다.');
+  const response=await this.request(`/user/files/${name}`,{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(15000)});
   if(response.status===404)return null;
   if(!response.ok)throw Error(`서버 저장소를 읽지 못했습니다 (${response.status}).`);
-  const record=await response.json();
-  if(record?.format!==1||typeof record.revision!=='string'||!Object.hasOwn(record,'data'))throw Error('서버 저장소 형식을 읽을 수 없습니다. 기존 파일을 보존했습니다.');
-  validate(record.data);return record;
+  return response.json();
  }
- async upload(record){
-  const response=await this.request('/api/files/upload',{method:'POST',credentials:'same-origin',headers:this.headers(),body:JSON.stringify({name:FILE_NAME,data:encode(JSON.stringify(record))}),signal:AbortSignal.timeout(15000)});
+ async fetchRemote(){
+  const manifest=await this.fetchFile(FILE_NAME);if(!manifest)return null;
+  if(typeof manifest.revision!=='string'||!Object.hasOwn(manifest,'data'))throw Error('서버 저장소 형식을 읽을 수 없습니다. 기존 파일을 보존했습니다.');
+  if(manifest.format===1){validate(manifest.data);return manifest;}
+  if(manifest.format!==2||!object(manifest.characters))throw Error('서버 저장소 형식을 읽을 수 없습니다. 기존 파일을 보존했습니다.');
+  validate(manifest.data);
+  if(manifest.data!==null&&Object.keys(manifest.data.characters).length)throw Error('캐릭터 저장 목록 형식이 잘못되었습니다. 기존 파일을 보존했습니다.');
+  const refs=Object.entries(manifest.characters),files=new Set();
+  for(const [id,ref] of refs){if(!id||!object(ref)||!characterFile(ref.file)||typeof ref.revision!=='string'||files.has(ref.file))throw Error('캐릭터 저장 목록이 손상됐습니다. 기존 파일을 보존했습니다.');files.add(ref.file);}
+  let data;
+  if(manifest.transaction){
+   const tx=manifest.transaction;validate(tx.snapshot);
+   if(!Array.isArray(tx.deletes)||tx.deletes.some(name=>!characterFile(name)||files.has(name))||!equal(Object.keys(tx.snapshot?.characters||{}).sort(),refs.map(([id])=>id).sort())||!equal(manifest.data,tx.snapshot===null?null:{...tx.snapshot,characters:{}}))throw Error('저장 복구 정보를 읽을 수 없습니다. 기존 파일을 보존했습니다.');
+   data=tx.snapshot;
+  }else if(manifest.data===null){if(refs.length)throw Error('삭제된 저장소에 캐릭터 목록이 남아 있습니다.');data=null;}
+  else{
+   const characters=[];
+   for(const [id,ref] of refs){let file=this.cache.get(ref.file);if(file?.revision!==ref.revision)file=await this.fetchFile(ref.file);
+    if(file?.format!==1||file.characterId!==id||file.revision!==ref.revision||!object(file.data?.profiles)||!object(file.data?.branches))throw Error('캐릭터 저장 파일이 없거나 일치하지 않습니다. 기존 데이터를 덮어쓰지 않았습니다.');
+    this.cache.set(ref.file,file);characters.push([id,file.data]);
+   }
+   data={...manifest.data,characters:Object.fromEntries(characters)};validate(data);
+  }
+  return {format:2,revision:manifest.revision,data,manifest};
+ }
+ async upload(record,name=FILE_NAME){
+  if(name!==FILE_NAME&&!characterFile(name))throw Error('의상실 저장 파일 경로가 잘못되었습니다.');
+  const response=await this.request('/api/files/upload',{method:'POST',credentials:'same-origin',headers:this.headers(),body:JSON.stringify({name,data:encode(JSON.stringify(record))}),signal:AbortSignal.timeout(15000)});
   if(!response.ok)throw Error(`서버에 저장하지 못했습니다 (${response.status}).`);
   const result=await response.json();
-  if(String(result.path).replace(/^\//,'')!==FILE_PATH)throw Error('서버 저장 경로를 확인하지 못했습니다.');
+  if(String(result.path).replace(/^\//,'')!==`user/files/${name}`)throw Error('서버 저장 경로를 확인하지 못했습니다.');
+ }
+ async assertCurrent(manifest){const actual=await this.fetchFile(FILE_NAME);if(actual?.format!==2||actual.revision!==manifest.revision)throw conflict();return actual;}
+ async finishTransaction(manifest){
+  if(!manifest.transaction)return manifest;
+  const snapshot=manifest.transaction.snapshot;
+  for(const [id,ref] of Object.entries(manifest.characters)){
+   const expected={format:1,characterId:id,revision:ref.revision,data:snapshot.characters[id]};
+   await this.assertCurrent(manifest);const existing=await this.fetchFile(ref.file);
+   if(!equal(existing,expected)){await this.assertCurrent(manifest);await this.upload(expected,ref.file);if(!equal(await this.fetchFile(ref.file),expected))throw Error('캐릭터 파일 저장을 확인하지 못했습니다. 복구 정보를 유지합니다.');}
+   this.cache.set(ref.file,expected);
+  }
+  for(const name of manifest.transaction.deletes){
+   await this.assertCurrent(manifest);
+   const response=await this.request('/api/files/delete',{method:'POST',credentials:'same-origin',headers:this.headers(),body:JSON.stringify({path:`user/files/${name}`}),signal:AbortSignal.timeout(15000)});
+   if((!response.ok&&response.status!==404)||await this.fetchFile(name)!==null)throw Error('캐릭터 저장 파일 삭제를 완료하지 못했습니다. 다시 연결하면 정리를 재시도합니다.');
+   this.cache.delete(name);
+  }
+  const current=await this.assertCurrent(manifest);if(!current.transaction)return current;
+  const clean={...manifest};delete clean.transaction;
+  await this.upload(clean);if(!equal(await this.fetchFile(FILE_NAME),clean))throw conflict();
+  return clean;
  }
  async init(){
   try{
    this.remote=await this.fetchRemote();this.value=this.remote?.data??null;this.ready=true;this.error=null;
+   if(this.remote?.manifest?.transaction){await this.finishTransaction(this.remote.manifest);this.remote=await this.fetchRemote();this.value=this.remote?.data??null;}
    if(this.remote?.data===null)this.clearLegacy();
    const old=this.legacy?.getItem(KEY);this.legacyAvailable=!!old;
-   if(!this.remote&&old){
-    this.value=validate(JSON.parse(old));this.setItem(KEY,JSON.stringify(this.value));await this.flush();this.clearLegacy();
+   if((this.remote?.format===1&&this.value!==null)||(!this.remote&&old)){
+    const importing=!this.remote;if(importing)this.value=validate(JSON.parse(old));this.setItem(KEY,JSON.stringify(this.value));await this.flush();if(importing)this.clearLegacy();
    }
    this.error=null;this.notify('서버 저장됨');return this;
   }catch(error){this.error=error;this.ready=false;this.notify('서버 연결 실패 · 다시 연결하세요');return this;}
@@ -53,18 +107,33 @@ export class ServerStorage {
  }
  async drain(){
   while(this.pending!==undefined){
-   const latest=await this.fetchRemote();
-   if(!equal(latest,this.remote)){
-    this.pending=undefined;this.remote=latest;this.value=latest?.data??null;if(latest?.data===null)this.clearLegacy();this.onChange();
+   let latest=await this.fetchRemote();
+   if(this.attempt&&latest?.revision===this.attempt.revision&&equal(latest.data,this.attempt.data))this.remote=latest;
+   if(!same(latest,this.remote)){
+    this.pending=undefined;this.attempt=null;this.remote=latest;this.value=latest?.data??null;if(latest?.data===null)this.clearLegacy();this.onChange();
     throw Error('다른 기기에서 변경된 내용을 불러왔습니다. 다시 확인한 뒤 작업하세요.');
    }
+   if(latest?.manifest?.transaction){await this.finishTransaction(latest.manifest);latest=await this.fetchRemote();this.remote=latest;}
    const data=this.pending;this.pending=undefined;
-   const record={format:1,revision:branchId(),data};
-   // An empty record retains only a revision, so stale clients cannot resurrect deleted data.
-   try{await this.upload(record);const verified=await this.fetchRemote();
-    if(!equal(verified,record)){this.pending=undefined;this.remote=verified;this.value=verified?.data??null;if(verified?.data===null)this.clearLegacy();this.onChange();throw Error('다른 기기의 동시 저장을 감지했습니다. 최신 내용을 확인하세요.');}
-    this.remote=record;if(data===null)this.clearLegacy();
-   }catch(error){if(this.pending===undefined&&equal(this.remote,latest))this.pending=data;throw error;}
+   if(latest?.format===2&&equal(data,latest.data)){this.attempt=null;continue;}
+   const previous=latest?.manifest?.characters||{},characters=Object.fromEntries(Object.entries(data?.characters||{}).map(([id,character])=>{
+    const ref=previous[id];return [id,{file:ref?.file||`kikki-closet-character-${branchId()}.json`,revision:ref&&equal(character,latest.data?.characters[id])?ref.revision:branchId()}];
+   }));
+   const used=new Set(Object.values(characters).map(ref=>ref.file)),deletes=Object.values(previous).map(ref=>ref.file).filter(file=>!used.has(file));
+   const manifest={format:2,revision:branchId(),data:data===null?null:{...data,characters:{}},characters,transaction:{snapshot:data,deletes}};
+   // Commit a recoverable snapshot before touching stable character files or deleting any.
+   try{
+    this.attempt={revision:manifest.revision,data};
+    await this.upload(manifest);const committed=await this.fetchRemote();
+    if(committed?.revision!==manifest.revision||!equal(committed.data,data))throw conflict();
+    this.remote=committed;
+    await this.finishTransaction(manifest);this.remote=await this.fetchRemote();this.attempt=null;if(data===null)this.clearLegacy();
+   }catch(error){
+    const actual=await this.fetchRemote().catch(()=>null);
+    if(actual&&actual.revision!==latest?.revision&&actual.revision!==manifest.revision){this.pending=undefined;this.attempt=null;this.remote=actual;this.value=actual.data;if(actual.data===null)this.clearLegacy();this.onChange();throw conflict();}
+    if(actual?.revision===manifest.revision&&equal(actual.data,data))this.remote=actual;
+    if(this.pending===undefined)this.pending=data;throw error;
+   }
   }
   this.notify('서버 저장됨');
  }
@@ -74,7 +143,7 @@ export class ServerStorage {
   const record=await this.fetchRemote();
   // A local edit may have started while this request was in flight.
   if(this.job||this.pending!==undefined)return;
-  if(!equal(record,this.remote)){this.remote=record;this.value=record?.data??null;if(record?.data===null)this.clearLegacy();this.onChange();}
+  if(!same(record,this.remote)){this.remote=record;this.value=record?.data??null;if(record?.data===null)this.clearLegacy();this.onChange();}
   this.notify('서버 저장됨');
  }
  async retry(){

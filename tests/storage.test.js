@@ -134,3 +134,14 @@ test('저장 완료 직전에 들어온 후속 변경도 flush가 끝나기 전�
  assert.equal(s.data().characters.followup.name,'Late change');assert.equal(pc.pending,undefined);assert.equal(pc.job,null);
  assert.equal(s.record.transaction,undefined);assert.equal(s.files.size,3);
 });
+
+test('서버 갱신 뒤 보정 저장이 시작되면 끝날 때까지 저장 중 표시를 유지한다',async()=>{
+ const s=server(),pc=await s.client(),p=new Store(pc);p.createCharacter('c','C');await pc.flush();const mobile=await s.client();
+ p.character('c').name='Updated';p.save();await pc.flush();
+ let release,started;const began=new Promise(resolve=>started=resolve),request=mobile.request;
+ mobile.request=async(url,options)=>{if(url==='/api/files/upload'&&!release)await new Promise(resolve=>{release=resolve;started();});return request(url,options);};
+ mobile.onChange=()=>{const m=new Store(mobile);m.data.settings.displayLimit=2;m.save();};
+ await mobile.pull();await began;
+ try{assert.equal(mobile.status,'서버에 저장 중…');}finally{release();await mobile.flush();}
+ assert.equal(mobile.status,'서버 저장됨');assert.equal(s.data().settings.displayLimit,2);assert.equal(s.data().characters.c.name,'Updated');assert.equal(s.record.transaction,undefined);
+});

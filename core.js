@@ -5,7 +5,7 @@ import {ensureContexts,validateSceneFacts,resolveOutfit,sceneRequest} from './ou
 export const KEY = 'kikki-closet:v1';
 export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'];
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
-export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8};
+export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
 export function compactStoredData(source){
  const data=clone(source),removed={translations:0,history:0,outfits:0,checkpoints:0,display:0};
@@ -13,7 +13,7 @@ export function compactStoredData(source){
   for(const who of ['character','persona'])if(branch.reportTranslations?.[who]&&(!branch.profiles?.[who]||branch.reportTranslations[who].signature!==hash(JSON.stringify(branch.profiles[who].fields)))){delete branch.reportTranslations[who];removed.translations++;}
   for(const [key,limit] of [['history',5],['outfits',10]])if(Array.isArray(branch[key])&&branch[key].length>limit){removed[key]+=branch[key].length-limit;branch[key]=branch[key].slice(-limit);}
   if(branch.checkpoints){const keys=Object.keys(branch.checkpoints);for(const key of keys.slice(0,Math.max(0,keys.length-80))){delete branch.checkpoints[key];removed.checkpoints++;}}
-  removed.display+=pruneDisplaySnapshots(branch);
+  removed.display+=trimDisplay(branch,data.settings?.displayLimit);
  }
  return {data,removed,total:Object.values(removed).reduce((sum,n)=>sum+n,0)};
 }
@@ -23,6 +23,7 @@ export function emptyState(){return ensureContexts({scene:{time:'불명',place:'
 export function hash(value){let h=2166136261;for(const c of String(value)){h^=c.charCodeAt(0);h=Math.imul(h,16777619);}return (h>>>0).toString(36);}
 export function visibleMessages(chat){return chat.flatMap((m,i)=>m.is_system||m.is_hidden||m.extra?.is_hidden?[]:[{id:String(m.extra?.kikki_id||m.send_date||i),swipe:m.swipe_id??0,role:m.is_user?'user':'character',name:text(m.name,80),content:text(String(m.mes||'').replace(/<kikki_outfit\s*>[\s\S]*?<\/kikki_outfit\s*>/gi,''),12000)}]);}
 export function prefixKeys(messages){let key='root';return messages.map(m=>(key=hash(key+JSON.stringify(m))));}
+export const displayLimit=value=>Math.max(1,Math.min(20,Math.floor(Number(value))||1));
 export function displayKey(message){return hash(JSON.stringify([message.id,message.swipe??0,message.content]));}
 export function pruneDisplaySnapshots(branch){
  if(!branch.display)return 0;
@@ -30,36 +31,70 @@ export function pruneDisplaySnapshots(branch){
  for(const key of Object.keys(branch.display.snapshots||{}))if(!used.has(key)){delete branch.display.snapshots[key];count++;}
  return count;
 }
-export function recordDisplay(branch,chatId,messages,state){
- const message=messages.at(-1);if(!chatId||message?.role!=='character')return;
+export function recordDisplay(branch,chatId,messages,state,limit=1){
+ const index=messages.findLastIndex(message=>message.role==='character');
+ const message=messages[index];if(!chatId||message?.role!=='character')return;
  branch.display??={chats:{},snapshots:{}};
  const display=branch.display,snapshot={sceneKo:clone(state.sceneKo||{}),people:Object.fromEntries(['character','persona'].map(who=>[who,{nude:!!state.people[who].nude,items:clone(state.people[who].items)}]))};
  const serialized=JSON.stringify(snapshot);let key=hash(serialized),n=0;
  while(display.snapshots[key]&&JSON.stringify(display.snapshots[key])!==serialized)key=hash(serialized)+'-'+(++n);
  display.snapshots[key]=snapshot;
  const records=display.chats[chatId]??={},id=displayKey(message),previous=records[id];
- records[id]={prefix:prefixKeys(messages).at(-1),snapshot:key,folded:previous?.folded||false,tab:previous?.tab||'character'};
- pruneDisplaySnapshots(branch);
+ // Numeric hashes are enumerated before other keys by JS; store recency explicitly.
+ const orders=Object.values(records).map((record,i)=>record.order??i+1);
+ const order=previous?(previous.order??Object.keys(records).indexOf(id)+1):Math.max(0,...orders)+1;
+ delete records[id];records[id]={prefix:prefixKeys(messages)[index],snapshot:key,order,folded:previous?.folded||false,tab:previous?.tab||'character'};
+ trimDisplay(branch,limit);
 }
 export function savedDisplay(branch,chatId,message,prefix){
  const record=branch?.display?.chats?.[chatId]?.[displayKey(message)];
  return record?.prefix===prefix&&branch.display.snapshots[record.snapshot]?{record,state:branch.display.snapshots[record.snapshot]}:null;
 }
-export function removeDisplayChat(branch,chatId){if(branch?.display?.chats){delete branch.display.chats[chatId];pruneDisplaySnapshots(branch);}}
-export function pruneDisplayChat(branch,chatId,chat){
- const records=branch?.display?.chats?.[chatId];if(!records)return 0;
- const live=new Set();
- chat.forEach((message,index)=>{
-  if(message.is_user)return;
-  const swipes=Array.isArray(message.swipes)?message.swipes:[];
-  const variants=new Map(swipes.map((content,swipe)=>[swipe,content]));variants.set(message.swipe_id??0,message.mes);
-  for(const [swipe,content] of variants){
-   const [normalized]=visibleMessages([{...message,mes:content,swipe_id:swipe,is_system:false,is_hidden:false,extra:{...message.extra,is_hidden:false,kikki_id:message.extra?.kikki_id||message.send_date||String(index)}}]);
-   live.add(displayKey(normalized));
-  }
- });
- let count=0;for(const key of Object.keys(records))if(!live.has(key)){delete records[key];count++;}
+export function removeDisplayChat(branch,chatId){if(branch?.display?.chats){delete branch.display.chats[chatId];if(branch.display.heads)delete branch.display.heads[chatId];pruneDisplaySnapshots(branch);}}
+export function trimDisplay(branch,limit=1){
+ let count=0;
+ for(const records of Object.values(branch.display?.chats||{})){
+  const oldest=Object.entries(records).map(([key,record],i)=>({key,order:record.order??i+1})).sort((a,b)=>a.order-b.order);
+  for(const {key} of oldest.slice(0,-displayLimit(limit))){delete records[key];count++;}
+ }
  return count+pruneDisplaySnapshots(branch);
+}
+export function pruneDisplayChat(branch,chatId,chat,limit=1){
+ const records=branch?.display?.chats?.[chatId];if(!records)return 0;
+ const messages=visibleMessages(chat),keys=prefixKeys(messages),live=new Map(messages.flatMap((message,i)=>message.role==='character'?[[displayKey(message),keys[i]]]:[]).slice(-displayLimit(limit)));
+ let count=0;for(const [key,record] of Object.entries(records))if(live.get(key)!==record.prefix){delete records[key];count++;}
+ return count+pruneDisplaySnapshots(branch);
+}
+// A small per-chat cursor validates the current flow; it never stores another outfit copy.
+export function trustedTimeline(branch,messages,chatId){
+ if(!branch)return null;
+ const keys=prefixKeys(messages),head=branch.display?.heads?.[chatId];
+ const fromKey=key=>{const index=keys.indexOf(key),checkpoint=branch.checkpoints?.[key];return index>=0&&checkpoint?{state:checkpoint.state,checkpoint,index,key}:null;};
+ if(head&&!head.stale){if(head.key==='root')return {state:branch.base,checkpoint:null,index:-1,key:'root'};const saved=fromKey(head.key);if(saved)return saved;}
+ const last=messages.findLastIndex(message=>message.role==='character');
+ if(last>=0&&savedDisplay(branch,chatId,messages[last],keys[last])){const saved=fromKey(keys[last]);if(saved)return saved;}
+ if(!head){
+  const saved=fromKey(branch.keys?.at(-1));if(saved)return saved;
+  if(!branch.keys?.length&&!Object.keys(branch.checkpoints||{}).length)return {state:branch.base,checkpoint:null,index:-1,key:'root'};
+ }
+ return null;
+}
+export function reconcileDisplay(branch,chatId,messages,limit=1){
+ if(!branch||!chatId)return false;
+ branch.display??={chats:{},snapshots:{}};
+ const before=JSON.stringify(branch.display),timeline=trustedTimeline(branch,messages,chatId);
+ // Root is a deliberate new branch base, not a fallback after deleting all messages.
+ if(timeline?.key!=='root'){branch.display.heads??={};branch.display.heads[chatId]=timeline?{key:timeline.key,stale:false}:{key:branch.display.heads[chatId]?.key||'',stale:true};}
+ const records=branch.display.chats[chatId]||{};
+ const last=messages.findLastIndex(message=>message.role==='character');
+ // A manual read can include a trailing user input. If that input is deleted,
+ // align the memo with the same surviving checkpoint used by the macro.
+ if(timeline&&last>=0&&timeline.index>=last)recordDisplay(branch,chatId,messages,timeline.state,limit);
+ const keys=prefixKeys(messages);
+ const live=new Map(messages.flatMap((message,i)=>message.role==='character'?[[displayKey(message),keys[i]]]:[]).slice(-displayLimit(limit)));
+ for(const [key,record] of Object.entries(records))if(live.get(key)!==record.prefix)delete records[key];
+ trimDisplay(branch,limit);
+ return before!==JSON.stringify(branch.display);
 }
 export function recentTurnStart(messages,turns=8){
  const limit=Math.max(1,Math.min(50,Math.floor(Number(turns)||8)));
@@ -67,19 +102,25 @@ export function recentTurnStart(messages,turns=8){
  return count?0:Math.max(0,messages.length-limit);
 }
 export function missingBrand(brand){return !String(brand||'').trim()||/^(?:unknown|brand unknown|unknown brand|unbranded|무브랜드|브랜드 미상|불명)$/i.test(String(brand).trim());}
-export function savedOutfitForMessages(branch,messages){
+export function savedOutfitForMessages(branch,messages,chatId){
+ if(chatId!==undefined)return trustedTimeline(branch,messages,chatId)?.state||null;
  const keys=prefixKeys(messages);for(let i=keys.length-1;i>=0;i--)if(branch.checkpoints[keys[i]])return branch.checkpoints[keys[i]].state;
  return branch.base;
 }
 // Select the active timeline before showing/editing a shared branch in another chat.
-export function restoreBranchForMessages(branch,messages){
+export function restoreBranchForMessages(branch,messages,chatId){
+ if(chatId!==undefined){
+  const timeline=trustedTimeline(branch,messages,chatId),cp=timeline?.checkpoint;
+  Object.assign(branch,{current:ensureContexts(clone(timeline?.state||emptyState())),extra:clone(cp?.extra||branch.extra||{character:[],persona:[]}),history:clone(cp?.history||[]),outfits:clone(cp?.outfits||[]),outfitMemory:clone(cp?.outfitMemory||(timeline?.key==='root'?branch.baseMemory:{} )||{}),keys:prefixKeys(messages).slice(0,(timeline?.index??-1)+1)});
+  return branch.current;
+ }
  const keys=prefixKeys(messages);let checkpoint,start=0;
  for(let i=keys.length-1;i>=0;i--)if(branch.checkpoints[keys[i]]){checkpoint=branch.checkpoints[keys[i]];start=i+1;break;}
  const state=ensureContexts(clone(checkpoint?.state||branch.base));
  Object.assign(branch,{current:state,extra:clone(checkpoint?.extra||branch.baseExtra||{character:[],persona:[]}),history:clone(checkpoint?.history||[]),outfits:clone(checkpoint?.outfits||[]),outfitMemory:clone(checkpoint?.outfitMemory||branch.baseMemory||memoryFromStates([state])),keys:keys.slice(0,start)});
  return state;
 }
-export function saveManualOutfit(branch,people,messages,chatId){
+export function saveManualOutfit(branch,people,messages,chatId,limit=1){
  const next=ensureContexts({...clone(branch.current),people:clone(people)});
  validateState(next,Object.fromEntries(['character','persona'].map(who=>[who,ownedItems(branch,who)])));
  branch.outfitMemory=updateOutfitMemory(branch.outfitMemory,branch.current,next);branch.current=next;
@@ -88,7 +129,8 @@ export function saveManualOutfit(branch,people,messages,chatId){
   branch.checkpoints[last]={state:clone(next),extra:clone(branch.extra),history:clone(branch.history),outfits:clone(branch.outfits),outfitMemory:clone(branch.outfitMemory)};
   for(const stale of Object.keys(branch.checkpoints).slice(0,-80))delete branch.checkpoints[stale];
  }else{branch.base=clone(next);branch.baseExtra=clone(branch.extra);branch.baseMemory=clone(branch.outfitMemory);}
- recordDisplay(branch,chatId,messages,next);
+ branch.display??={chats:{},snapshots:{}};branch.display.heads??={};branch.display.heads[chatId]={key:last||'root',stale:false};
+ recordDisplay(branch,chatId,messages,next,limit);
 }
 export function outfitInjection(state){
  return outfitText(state,2,true);
@@ -178,12 +220,13 @@ export class Store {
   try{
    const d=JSON.parse(raw);if(d.version!==1||!d.characters||typeof d.characters!=='object')throw Error();
    d.settings={...DEFAULTS,...d.settings,wardrobeLevel:wardrobeLevel(d.settings)};
+   d.settings.displayLimit=displayLimit(d.settings.displayLimit);
    if(!['floating','inline'].includes(d.settings.displayMode))d.settings.displayMode='floating';
    for(const key of ['wardrobeSize','wardrobeLevels','worlds','target','newItems','variety','detail'])delete d.settings[key];
    for(const character of Object.values(d.characters))for(const branch of Object.values(character.branches||{})){
     for(const state of [branch.base,branch.current,...(branch.history||[])])ensureContexts(state);
     for(const cp of Object.values(branch.checkpoints||{})){ensureContexts(cp.state);for(const state of cp.history||[])ensureContexts(state);}
-    branch.display??={chats:{},snapshots:{}};
+    branch.display??={chats:{},snapshots:{}};trimDisplay(branch,d.settings.displayLimit);
    }
    return d;
   }catch{throw Error('저장 데이터가 손상되었습니다. 데이터 관리에서 초기화하세요.');}
@@ -223,13 +266,16 @@ export class Engine {
  async read(id,bid,messages,{force=false,system,gate=false,onRequest=()=>{},profileId,chatId,names={},isCurrent=()=>true}={}){
   this.cancel();const serial=this.serial,epoch=this.store.epoch,b=this.store.branch(id,bid);
   if(!b||b.suspended)return null;
-  const keys=prefixKeys(messages),key=keys.at(-1)||'root';if(!force&&key===b.keys.at(-1))return b.current;
+  const keys=prefixKeys(messages),key=keys.at(-1)||'root';
+  const timeline=chatId?trustedTimeline(b,messages,chatId):null;
+  if(!force&&key===b.keys.at(-1)&&(!chatId||timeline)){if(chatId&&reconcileDisplay(b,chatId,messages,this.store.data.settings.displayLimit))this.store.save();return b.current;}
   let baseline=ensureContexts(clone(b.base)),extra=clone(b.baseExtra||{character:[],persona:[]}),history=[],outfits=[],memory=clone(b.baseMemory||memoryFromStates([b.base])),start=0;
-  for(let i=keys.length-1;i>=0;i--)if(b.checkpoints[keys[i]]){
+  for(let i=keys.length-1;i>=0;i--)if(b.checkpoints[keys[i]]&&(!chatId||timeline?.key===keys[i])){
    const cp=b.checkpoints[keys[i]];baseline=ensureContexts(clone(cp.state));extra=clone(cp.extra);history=clone(cp.history);outfits=clone(cp.outfits);memory=clone(cp.outfitMemory||memoryFromStates([b.base,...cp.history,cp.state]));start=i+1;break;
   }
+  if(chatId&&!timeline){baseline=emptyState();extra=clone(b.extra);history=[];outfits=[];memory={};start=0;}
   const added={character:[],persona:[]};let state=baseline;
-  const needsRead=force||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
+  const needsRead=force||chatId&&!timeline||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
   if(needsRead){
    this.controller=new AbortController();const signal=this.controller.signal;
    const valid=()=>!signal.aborted&&serial===this.serial&&epoch===this.store.epoch&&this.store.branch(id,bid)===b&&isCurrent();
@@ -270,6 +316,7 @@ export class Engine {
   Object.assign(b,{current:state,keys,extra,history,outfits,outfitMemory:nextMemory});
   b.checkpoints[key]={state:clone(state),extra:clone(extra),history:clone(history),outfits:clone(outfits),outfitMemory:clone(nextMemory)};
   for(const stale of Object.keys(b.checkpoints).slice(0,-80))delete b.checkpoints[stale];
-  recordDisplay(b,chatId||b.links[0],messages,state);this.store.save();this.controller=null;return state;
+  if(chatId){b.display??={chats:{},snapshots:{}};b.display.heads??={};b.display.heads[chatId]={key,stale:false};}
+  recordDisplay(b,chatId||b.links[0],messages,state,this.store.data.settings.displayLimit);this.store.save();this.controller=null;return state;
  }
 }

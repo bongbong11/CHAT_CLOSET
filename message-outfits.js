@@ -1,4 +1,4 @@
-import {CATEGORIES,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabel,itemUiBrand,koreanDisplay,hash} from './core.js';
+import {CATEGORIES,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabel,itemUiBrand,koreanDisplay,hash,displayLimit} from './core.js';
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const PEOPLE=['character','persona'];
@@ -14,13 +14,17 @@ export function createMessageOutfits(api){
   if(!state.settings.enabled||state.settings.displayMode!=='inline'||!identity){chat.querySelectorAll('.kc-inline-card').forEach(node=>node.remove());return;}
   const source=api.context().chat,messages=visibleMessages(source),prefixes=prefixKeys(messages),byIndex=new Map();let visible=0;
   source.forEach((message,index)=>{if(!message.is_system&&!message.is_hidden&&!message.extra?.is_hidden){byIndex.set(index,{message:messages[visible],prefix:prefixes[visible]});visible++;}});
+  const eligible=[...byIndex].filter(([,entry])=>entry.message.role==='character').map(([index])=>index),latest=eligible.at(-1),kept=new Set(eligible.slice(-displayLimit(state.settings.displayLimit)));
+  const localKeys=new Set([...kept].map(index=>displayKey(byIndex.get(index).message)));
+  for(const key of local.keys())if(!localKeys.has(key))local.delete(key);
   for(const node of chat.querySelectorAll('.mes[mesid]')){
    const index=Number(node.getAttribute('mesid')),entry=byIndex.get(index),textNode=node.querySelector('.mes_text');
    let card=node.querySelector('.kc-inline-card');
-   if(!entry||entry.message.role!=='character'||!textNode||source[index]?.is_user){card?.remove();continue;}
+   if(!kept.has(index)||!entry||entry.message.role!=='character'||!textNode||source[index]?.is_user){card?.remove();continue;}
    const saved=savedDisplay(state.branch,identity.chat,entry.message,entry.prefix),key=displayKey(entry.message);
+   if(!saved&&index!==latest){card?.remove();continue;}
    const view=saved?.record||local.get(key)||{folded:false,tab:'character'};
-   const pending=state.pending&&index===source.length-1;
+   const pending=(state.pending||state.generating)&&index===latest;
    const ink=getComputedStyle(node).color;
    const signature=hash(JSON.stringify([scope,key,entry.prefix,saved?.state,view.folded,view.tab,state.settings.brands,identity.name,identity.userName,pending,ink]));
    if(card?.dataset.signature===signature)continue;
@@ -31,14 +35,14 @@ export function createMessageOutfits(api){
    const bodyId='kc-outfit-'+index;
    const personHtml=who=>{
     const person=saved?.state.people[who];
-    const content=!person?'<p class="kc-inline-empty">이 답변의 착장 기록이 없습니다.</p>':person.nude?'<p class="kc-inline-empty">착용 없음</p>':!person.items.length?'<p class="kc-inline-empty">확인된 착장 없음</p>':`<dl>${CATEGORIES.map(category=>{
+    const content=!person?'<p class="kc-inline-empty">착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.</p>':person.nude?'<p class="kc-inline-empty">착용 없음</p>':!person.items.length?'<p class="kc-inline-empty">확인된 착장 없음</p>':`<dl>${CATEGORIES.map(category=>{
      const items=person.items.filter(item=>item.category===category);if(!items.length)return '';
      return `<div class="kc-inline-row"><dt>${category}</dt><dd>${items.map(item=>`<span class="kc-inline-item">${escape(itemUiLabel(item))}${state.settings.brands?`<small>${escape(itemUiBrand(item))}</small>`:''}${koreanDisplay(item.wearingKo)?`<em>${escape(item.wearingKo)}</em>`:''}</span>`).join('')}</dd></div>`;
     }).join('')}</dl>`;
     return `<section class="kc-inline-person" id="${bodyId}-${who}" data-who="${who}" data-active="${view.tab===who}"><h4>${escape(names[who])}</h4>${content}</section>`;
    };
    const scene=saved?.state.sceneKo||{},summary=[scene.place,scene.activity].filter(v=>koreanDisplay(v)).join(' · ');
-   card.innerHTML=`<span class="kc-inline-tape" aria-hidden="true"></span><button type="button" class="kc-inline-toggle" aria-expanded="${!view.folded}" aria-controls="${bodyId}"><img src="${asset(view.folded?'kikki-closed.webp':'kikki-open.webp')}" alt="끼끼"><span>착장정보</span><span class="kc-inline-chevron" aria-hidden="true">${view.folded?'⌄':'⌃'}</span></button><div class="kc-inline-body" id="${bodyId}" ${view.folded?'hidden':''}>${saved?`<div class="kc-inline-tabs" role="tablist" aria-label="착장 인물">${PEOPLE.map(who=>`<button type="button" id="${bodyId}-tab-${who}" role="tab" aria-selected="${view.tab===who}" aria-controls="${bodyId}-${who}" data-who="${who}">${escape(names[who])}</button>`).join('')}</div><div class="kc-inline-people">${PEOPLE.map(personHtml).join('')}</div>${summary?`<footer>${escape(summary)}</footer>`:''}`:`<p class="kc-inline-empty" role="status">${pending?'착장을 확인하고 있어요.':'이 답변의 착장 기록이 없습니다.'}</p>`}</div>`;
+   card.innerHTML=`<span class="kc-inline-tape" aria-hidden="true"></span><button type="button" class="kc-inline-toggle" aria-expanded="${!view.folded}" aria-controls="${bodyId}"><img src="${asset(view.folded?'kikki-closed.webp':'kikki-open.webp')}" alt="끼끼"><span>착장정보</span><span class="kc-inline-chevron" aria-hidden="true">${view.folded?'⌄':'⌃'}</span></button><div class="kc-inline-body" id="${bodyId}" ${view.folded?'hidden':''}>${saved?`<div class="kc-inline-tabs" role="tablist" aria-label="착장 인물">${PEOPLE.map(who=>`<button type="button" id="${bodyId}-tab-${who}" role="tab" aria-selected="${view.tab===who}" aria-controls="${bodyId}-${who}" data-who="${who}">${escape(names[who])}</button>`).join('')}</div><div class="kc-inline-people">${PEOPLE.map(personHtml).join('')}</div>${summary?`<footer>${escape(summary)}</footer>`:''}`:`<p class="kc-inline-empty" role="status">${pending?'착장을 확인하고 있어요.':'착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.'}</p>`}</div>`;
    function update(patch){
     if(scope!==currentScope)return;
     if(saved)api.saveView(entry.message,entry.prefix,patch);

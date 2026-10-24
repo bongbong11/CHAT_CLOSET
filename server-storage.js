@@ -155,7 +155,8 @@ export class ServerStorage {
   // A local edit may have started while this request was in flight.
   if(this.job||this.pending!==undefined)return;
   if(!same(record,this.remote)){this.remote=record;this.value=record?.data??null;if(record?.data===null)this.clearLegacy();this.onChange();}
-  this.notify('서버 저장됨');
+  // Loading can normalize display records and queue a save in onChange.
+  if(!this.job&&this.pending===undefined)this.notify('서버 저장됨');
  }
  async retry(){
   if(!this.ready){await this.init();if(this.error)throw this.error;this.onChange();return;}

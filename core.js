@@ -7,7 +7,7 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.4';
+export const EXTENSION_VERSION='1.6.5';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -20,6 +20,29 @@ function diagnosticValue(value,seen=new WeakSet()){
 export class DiagnosticLog{
  constructor({limit=30,bytes=2*1024*1024,console:output=globalThis.console}={}){this.limit=limit;this.bytes=bytes;this.output=output;this.records=[];this.listeners=new Set();this.serial=0;this.reported=new WeakSet();}
  subscribe(fn){this.listeners.add(fn);return ()=>this.listeners.delete(fn);}
+ print(row){
+  const c=this.output;if(!c)return;
+  const snapshot=clone(row),buckets=new Map(),labels={scene:'장면 판독',storage:'서버 저장',task:'분석·옷장 작업',error:'오류',analysis:'취향 분석',wardrobe:'옷장 생성',items:'의상 생성',test:'연결 확인'};
+  for(const [index,event] of snapshot.events.entries()){
+   const category=['warn','error'].includes(event.level)?'경고·오류':['gate','context','request','response','normalize','parse'].includes(event.stage)?'수집·모델 응답':['physical-state','decision','matching','apply'].includes(event.stage)?'착장 판단':'저장·결과';
+   if(!buckets.has(category))buckets.set(category,[]);buckets.get(category).push({order:index+1,...event});
+  }
+  const errors=snapshot.events.filter(e=>e.level==='error').length,warnings=snapshot.events.filter(e=>e.level==='warn').length;
+  const title=`[Kikki Closet] ${labels[row.type]||row.type} · ${row.outcome} · ${snapshot.events.at(-1)?.elapsedMs||0}ms${errors?' · 오류 '+errors:''}${warnings?' · 경고 '+warnings:''} [${row.id}]`;
+  const write=(level,...args)=>(c[level]||c.log)?.call(c,...args);
+  // Flush synchronously when a task ends. Never leave a console group open across await.
+  try{
+   if(typeof c.groupCollapsed!=='function'||typeof c.groupEnd!=='function'){write(errors?'error':warnings?'warn':'info',title,snapshot);return;}
+   c.groupCollapsed(title);
+   try{
+    write('info',{id:row.id,time:row.time,type:row.type,scope:snapshot.scope,outcome:row.outcome,truncated:!!row.truncated});
+    for(const [category,events] of buckets){
+     c.groupCollapsed(`${category} (${events.length})`);
+     try{for(const event of events)write(event.level,event);}finally{c.groupEnd();}
+    }
+   }finally{c.groupEnd();}
+  }catch{/* Console integrations must not interrupt outfit processing. */}
+ }
  notify(){
   const size=()=>new TextEncoder().encode(JSON.stringify(this.records)).length;
   while(this.records.length>this.limit||this.records.length>1&&size()>this.bytes)this.records.shift();
@@ -34,9 +57,9 @@ export class DiagnosticLog{
   const row={id:type+'-'+Date.now().toString(36)+'-'+(++this.serial),version:EXTENSION_VERSION,time:new Date().toISOString(),timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,type,scope:diagnosticValue(scope),outcome:'running',events:[]};this.records.push(row);const started=Date.now(),log=this;
   const trace={id:row.id,get ended(){return row.outcome!=='running';},get outcome(){return row.outcome;},event(stage,message,data,level='info'){
    row.events.push({time:new Date().toISOString(),elapsedMs:Date.now()-started,stage,level,message,data:diagnosticValue(data)});
-   const c=log.output;c?.groupCollapsed?.('[Kikki Closet]['+row.id+'] '+message);(level==='error'?c?.error:level==='warn'?c?.warn:c?.info)?.call(c,{stage,data:diagnosticValue(data)});c?.groupEnd?.();log.notify();
-  },finish(outcome,message,data){if(trace.ended)return;row.outcome=outcome;trace.event('result',message,data,outcome==='unusable'||outcome==='partial'?'warn':'info');},
-  fail(error,stage='execution'){if(error&&typeof error==='object')log.reported.add(error);if(trace.ended)return;row.outcome=error?.name==='AbortError'?'cancelled':'error';trace.event(stage,error?.message||String(error),error,row.outcome==='error'?'error':'info');}};
+   log.notify();
+  },finish(outcome,message,data){if(trace.ended)return;row.outcome=outcome;trace.event('result',message,data,outcome==='unusable'||outcome==='partial'?'warn':'info');log.print(row);},
+  fail(error,stage='execution'){if(error&&typeof error==='object')log.reported.add(error);if(trace.ended)return;row.outcome=error?.name==='AbortError'?'cancelled':'error';trace.event(stage,error?.message||String(error),error,row.outcome==='error'?'error':'info');log.print(row);}};
   trace.event('start','작업 시작',scope);return trace;
  }
  error(error,scope={}){if(error&&typeof error==='object'&&this.reported.has(error))return;this.start('error',scope).fail(error);}

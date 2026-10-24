@@ -64,7 +64,7 @@ test('진단 로그는 원문·원인·순서를 복사하고 비밀값과 저�
  const events=[],logger=new DiagnosticLog({console:{groupCollapsed(){},info:v=>events.push(v),warn(){},error(){},groupEnd(){}}});
  const task=logger.start('scene',{chat:'a',apiKey:'secret'});task.event('response','응답 수신',{raw:'He is barefoot.',headers:{Authorization:'Bearer secret'},usage:{output_tokens:25}});
  const error=Error('failed',{cause:Error('root cause')});task.fail(error,'decision');logger.error(error);
- const copied=JSON.parse(logger.copy());assert.equal(copied.records.length,1);assert.equal(copied.records[0].events[1].data.raw,'He is barefoot.');assert.match(logger.copy(),/root cause/);assert.doesNotMatch(logger.copy(),/Bearer secret|"apiKey": "secret"/);assert.equal(events.length,2);
+ const copied=JSON.parse(logger.copy());assert.equal(copied.records.length,1);assert.equal(copied.records[0].events[1].data.raw,'He is barefoot.');assert.match(logger.copy(),/root cause/);assert.doesNotMatch(logger.copy(),/Bearer secret|"apiKey": "secret"/);assert.equal(events.length,3);assert.doesNotMatch(JSON.stringify(events),/Bearer secret|"apiKey":"secret"/);
  logger.clear();assert.equal(logger.list().length,0);
 });
 test('진단 로그는 개수·용량 제한을 지키고 잘림을 명시한다',()=>{
@@ -94,4 +94,28 @@ test('정상 changes 빈 응답과 Vertex 응답 포장은 형식 오류 없이 
  assert.equal(calls,1);assert.equal(result.outcome,'unchanged');assert.deepEqual(result.facts,{changes:{}});
  const summary=sceneSummary({people:{character:{context:{location:'home',phase:'resting',temperature:16,weather:'mild'}}},sceneKo:{}});
  assert.equal(summary.place,'집');assert.equal(summary.activity,'휴식');assert.equal(summary.weather,'온화 · 16℃');
+});
+
+
+test('콘솔은 동시 작업도 완료마다 한 묶음으로 출력하고 진행 로그는 즉시 보존한다',()=>{
+ const calls=[],stack=[];
+ const output={groupCollapsed(title){calls.push({kind:'group',title,depth:stack.length});stack.push(title);},groupEnd(){assert.ok(stack.length);stack.pop();}};
+ for(const level of ['info','warn','error'])output[level]=data=>calls.push({kind:level,data,depth:stack.length});
+ const logs=new DiagnosticLog({console:output}),a=logs.start('scene'),b=logs.start('storage');
+ a.event('response','응답',{raw:'model result'});a.event('decision','매칭',{kept:true});
+ assert.equal(calls.length,0);assert.equal(logs.list().find(row=>row.id===a.id).events.length,3);
+ b.finish('saved','저장 완료');assert.equal(stack.length,0);
+ a.event('parse','복구 성공',{attempt:1},'warn');a.finish('applied','완료');a.finish('applied','중복');
+ const roots=calls.filter(c=>c.kind==='group'&&c.depth===0);
+ assert.equal(roots.length,2);assert.match(roots[0].title,/서버 저장/);assert.match(roots[1].title,/장면 판독.*경고 1/);
+ for(const category of ['수집·모델 응답','착장 판단','저장·결과','경고·오류'])assert.ok(calls.some(c=>c.kind==='group'&&c.depth===1&&c.title.startsWith(category)));
+ assert.equal(stack.length,0);assert.equal(logs.list().find(row=>row.id===a.id).events.length,5);
+});
+
+test('콘솔 그룹 미지원과 출력 실패도 오류 원문 복사와 판독 완료를 막지 않는다',()=>{
+ const calls=[],logs=new DiagnosticLog({console:{error:(...args)=>calls.push(args)}}),trace=logs.start('scene');
+ trace.event('response','수신',{raw:'original'});const error=Error('connection failure');trace.fail(error);logs.error(error);
+ assert.equal(calls.length,1);assert.match(calls[0][0],/오류 1/);assert.equal(calls[0][1].events[1].data.raw,'original');assert.match(logs.copy(),/connection failure/);
+ const broken=new DiagnosticLog({console:{groupCollapsed(){throw Error('console unavailable');}}});
+ assert.doesNotThrow(()=>broken.start('storage').finish('saved','완료'));assert.equal(broken.list()[0].outcome,'saved');
 });

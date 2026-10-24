@@ -17,7 +17,7 @@ export function emptyContext(){return {location:'unknown',space:'unknown',phase:
 export function normalizeContext(value={}){
  const context=emptyContext();
  for(const [key,values] of Object.entries(VALUES))if(values.includes(value[key]))context[key]=value[key];
- for(const key of ['conditions','needs'])context[key]=[...new Set((Array.isArray(value[key])?value[key]:[]).map(s=>short(s,240)).filter(Boolean))].slice(0,12);
+ for(const key of ['conditions','needs'])context[key]=[...new Set((Array.isArray(value[key])?value[key]:[]).map(s=>short(s,240)).filter(Boolean))];
  if(typeof value.temperature==='number'&&Number.isFinite(value.temperature)&&value.temperature>=-80&&value.temperature<=65)context.temperature=value.temperature;
  return context;
 }
@@ -31,16 +31,16 @@ const word=value=>typeof value==='string'?value.trim().toLowerCase().replace(/[\
 const aliases={
  location:{house:'home',at_home:'home',outdoor:'outside',outdoors:'outside',office:'work',workplace:'work'},
  space:{indoors_private:'private',private_space:'private',public_space:'public'},
- phase:{rest:'resting',relaxing:'resting',bathing:'washing',showering:'washing',after_shower:'after_washing',after_bathing:'after_washing',asleep:'sleeping',preparation:'preparing',outdoor:'outdoors',work:'working',party:'formal',inpatient_care:'care'},
+ phase:{rest:'resting',relaxing:'resting',bathing:'washing',showering:'washing',after_shower:'after_washing',after_bathing:'after_washing',asleep:'sleeping',preparation:'preparing',outdoor:'outdoors',work:'working',party:'formal',inpatient_care:'care',inpatient:'care',hospitalized:'care',hospitalised:'care'},
  season:{fall:'autumn'},weather:{raining:'rain',rainy:'rain',snowing:'snow',snowy:'snow'},
  purpose:{everyday:'casual',business:'work',party:'formal',medical_care:'care'},
  exception:{none:'',no_exception:'',nude:'undressed',naked:'undressed'},
  category:{top:'상의',tops:'상의',shirt:'상의',bottom:'하의',bottoms:'하의',pants:'하의',underwear:'속옷',footwear:'신발',shoes:'신발',shoe:'신발',outerwear:'겉옷',coat:'겉옷',accessory:'소품',accessories:'소품',props:'소품'},
  op:{put_on:'wear',wears:'wear',putting_on:'wear',take_off:'remove',took_off:'remove',removed:'remove',remove_clothing:'remove',roll_up:'adjust',adjusted:'adjust',undress:'nude',undressed:'nude',naked:'nude',fully_nude:'nude'},
- key:{physical_conditions:'conditions',physical_state:'conditions',clothing_needs:'needs',clothing_constraints:'needs',temp:'temperature',location_type:'location',activity_phase:'phase',operation:'op',action:'op',type:'op',garment:'name',item_name:'name',wearing_state:'wearing',wearing_ko:'wearingKo',sceneko:'sceneKo',scene_ko:'sceneKo'},
+ key:{physical_conditions:'conditions',resolved_conditions:'resolvedConditions',resolved_needs:'resolvedNeeds',physical_state:'conditions',clothing_needs:'needs',clothing_constraints:'needs',temp:'temperature',location_type:'location',activity_phase:'phase',operation:'op',action:'op',type:'op',garment:'name',item_name:'name',wearing_state:'wearing',wearing_ko:'wearingKo',sceneko:'sceneKo',scene_ko:'sceneKo'},
 };
 const bool=value=>typeof value==='boolean'?value:['true','yes','1'].includes(word(String(value)))?true:['false','no','0'].includes(word(String(value)))?false:undefined;
-function canonicalObject(value){return object(value)?Object.fromEntries(Object.entries(value).map(([key,v])=>[aliases.key[word(key)]||[...Object.keys(VALUES),'changes','people','characters','context','state','actions','events','transition','category','op','name','color','brand','wearing','wearingKo','layer','scene','sceneKo','time','place','activity','reason','reasoning','confidence','noChange','status','result','data','conditions','needs','temperature'].find(v=>word(v)===word(key))||key,v])):{};}
+function canonicalObject(value){return object(value)?Object.fromEntries(Object.entries(value).map(([key,v])=>[aliases.key[word(key)]||[...Object.keys(VALUES),'changes','people','characters','context','state','actions','events','transition','category','op','name','color','brand','wearing','wearingKo','layer','scene','sceneKo','time','place','activity','reason','reasoning','confidence','noChange','status','result','data','conditions','needs','resolvedConditions','resolvedNeeds','temperature'].find(v=>word(v)===word(key))||key,v])):{};}
 export function normalizeSceneResponse(raw,{names={}}={}){
  const facts={changes:{}},adjustments=[],unresolved=[];
  const note=(path,input,output)=>{if(JSON.stringify(input)!==JSON.stringify(output))adjustments.push({path,input,output});};
@@ -81,6 +81,7 @@ export function normalizeSceneResponse(raw,{names={}}={}){
   const change=canonicalObject(value),next={context:{},actions:[]};
   if(!object(value)){unknown(who,value,'unstructured actor description');continue;}
   const context=canonicalObject(change.context||change.state||change);
+  for(const key of ['conditions','needs','resolvedConditions','resolvedNeeds'])if(context[key]===undefined&&change[key]!==undefined)context[key]=change[key];
   for(const [key,value] of Object.entries(context)){
    const path=who+'.context.'+key;
    if(value===null||value===undefined)continue;
@@ -89,7 +90,7 @@ export function normalizeSceneResponse(raw,{names={}}={}){
    }else if(key==='temperature'){
     const numeric=typeof value==='number'?value:typeof value==='string'&&/^-?\d+(?:\.\d+)?\s*(?:°?\s*c|℃)?$/i.test(value.trim())?parseFloat(value):NaN;
     if(Number.isFinite(numeric)&&numeric>=-80&&numeric<=65){next.context[key]=numeric;note(path,value,numeric);}else unknown(path,value);
-   }else if(['conditions','needs'].includes(key)){
+   }else if(['conditions','needs','resolvedConditions','resolvedNeeds'].includes(key)){
     const list=Array.isArray(value)?value:typeof value==='string'?[value]:null;
     if(!list){unknown(path,value);continue;}
     const terms={임신:'Pregnant',부상:'Injured',회복:'Recovered'};
@@ -127,7 +128,7 @@ export function normalizeSceneResponse(raw,{names={}}={}){
  for(const field of ['scene','sceneKo']){
   if(!object(root[field]))continue;
   const scene=canonicalObject(root[field]),summary={};
-  for(const key of ['time','place','activity','weather']){
+  for(const key of ['time','place','weather']){
    const value=scene[key];if(typeof value!=='string'||!value.trim())continue;
    if(field==='scene'&&/[가-힣]/.test(value)||field==='sceneKo'&&/[A-Za-z]/.test(value)){note(field+'.'+key,value,'display omitted');continue;}
    summary[key]=value.trim();
@@ -144,8 +145,15 @@ export function patchContext(previous,patch={}){
  const next=normalizeContext(previous);
  const moved=['location','space','phase'].some(key=>patch[key]&&patch[key]!=='unknown'&&patch[key]!==next[key]);
  if(moved)next.exception='';
+ const factKey=value=>String(value).trim().toLowerCase().replace(/[.!]+$/,'');
+ for(const key of ['conditions','needs']){
+  const resolved=new Set((patch[key==='conditions'?'resolvedConditions':'resolvedNeeds']||[]).map(factKey));
+  const retained=next[key].filter(value=>!resolved.has(factKey(value)));
+  // Omission and empty arrays mean no new facts, never an implicit reset.
+  next[key]=[...new Map([...retained,...(patch[key]||[])].map(value=>[factKey(value),value])).values()];
+ }
  for(const [key,value] of Object.entries(patch)){
-  if(value==='unknown')continue;
+  if(value==='unknown'||['conditions','needs','resolvedConditions','resolvedNeeds'].includes(key))continue;
   next[key]=structuredClone(value);
  }
  return next;

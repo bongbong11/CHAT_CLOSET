@@ -4,7 +4,7 @@ import {Store,Engine,KEY,emptyState,recordDisplay,savedDisplay,pruneDisplayChat,
 import {needsOutfitRead} from '../scene-gate.js';
 import {registerOutfitMacro,injectPayload} from '../host.js';
 import {requireEnglishProfile,toModelData} from '../model-schema.js';
-import {normalizeContext,normalizeSceneResponse,validateSceneFacts,resolveOutfit,sceneRequest} from '../outfit-rules.js';
+import {normalizeContext,normalizeSceneResponse,patchContext,validateSceneFacts,resolveOutfit,sceneRequest} from '../outfit-rules.js';
 import {itemTraits} from '../wardrobe.js';
 
 const memory=()=>{const map=new Map();return {getItem:key=>map.get(key)||null,setItem:(key,value)=>map.set(key,value),removeItem:key=>map.delete(key)};};
@@ -81,7 +81,7 @@ test('신체 조건은 유지하고 명시된 착용 제약이 있을 때만 해
  const pregnant=resolveOutfit(state,facts({conditions:['Pregnant']}),stock);assert.deepEqual(ids(pregnant.state),['top','tight','briefs']);
  const adapted=resolveOutfit(pregnant.state,facts({needs:['Avoid waist pressure']}),stock);assert.ok(ids(adapted.state).includes('loose'));assert.ok(!ids(adapted.state).includes('tight'));
  const same=resolveOutfit(adapted.state,facts({needs:['Avoid waist pressure']}),stock);assert.deepEqual(same.state,adapted.state);assert.deepEqual(same.missing,[]);
- const recovered=resolveOutfit(same.state,facts({conditions:[],needs:[]}),stock);assert.deepEqual(recovered.state.people.character.context.conditions,[]);assert.ok(ids(recovered.state).includes('loose'));
+ const recovered=resolveOutfit(same.state,facts({resolvedConditions:['Pregnant'],resolvedNeeds:['Avoid waist pressure']}),stock);assert.deepEqual(recovered.state.people.character.context.conditions,[]);assert.ok(ids(recovered.state).includes('loose'));
  const advanced=resolveOutfit(state,facts({conditions:['32 weeks pregnant']}),stock);assert.ok(ids(advanced.state).includes('loose'));assert.ok(ids(advanced.state).includes('top'));
 });
 test('실제 목욕만 탈의하고 계절/기온은 필요한 겉옷만 조정한다',()=>{
@@ -317,4 +317,25 @@ test('선택 착용 상태의 길이 차이 때문에 의미가 분명한 조정
  const wearing='sleeves rolled to the elbow with the old fastening left loose';
  const parsed=normalizeSceneResponse({changes:{character:{actions:{op:'adjust',category:'top',name:'Oxford shirt',wearing:wearing+'. '+wearing}}}});
  const result=resolveOutfit(home(),parsed.facts,owned);assert.equal(result.state.people.character.items[0].wearing,wearing+'. '+wearing);
+});
+
+test('일상 활동 요약은 수집하지 않고 임신·입원·착용 제약을 인물별로 유지한다',()=>{
+ const parsed=normalizeSceneResponse({changes:{character:{context:{location:'hospital',phase:'hospitalized',conditions:['Leg injury','Leg cast'],needs:['Easy leg access']}},persona:{context:{conditions:['Pregnant'],needs:['Avoid waist pressure']}}},scene:{activity:'Watching football and eating while checking blood pressure'},sceneKo:{activity:'경기 영상을 보며 식사 및 혈압 재측정 중'}});
+ assert.equal(parsed.facts.scene?.activity,undefined);assert.equal(parsed.facts.sceneKo?.activity,undefined);
+ assert.equal(parsed.facts.changes.character.context.phase,'care');assert.deepEqual(parsed.facts.changes.persona.context.conditions,['Pregnant']);assert.deepEqual(parsed.facts.changes.persona.context.needs,['Avoid waist pressure']);
+});
+
+test('신체 상태는 언급·빈 배열·새 상태 추가로 지워지지 않고 해소된 사실만 제거된다',()=>{
+ const old=normalizeContext({conditions:['Pregnant','Leg injury'],needs:['Avoid waist pressure']});
+ assert.deepEqual(patchContext(old,{conditions:[]}).conditions,['Pregnant','Leg injury']);
+ const admitted=patchContext(old,{conditions:['Inpatient treatment']});assert.deepEqual(admitted.conditions,['Pregnant','Leg injury','Inpatient treatment']);
+ const discharged=patchContext(admitted,{resolvedConditions:['Inpatient treatment']});assert.deepEqual(discharged.conditions,['Pregnant','Leg injury']);assert.deepEqual(discharged.needs,['Avoid waist pressure']);
+ const healed=patchContext(discharged,{resolvedConditions:['leg injury'],resolvedNeeds:[]});assert.deepEqual(healed.conditions,['Pregnant']);
+});
+
+test('해제 항목은 context 내부나 인물 바로 아래에 와도 해석하고 퇴원만 적용한다',()=>{
+ for(const part of [{context:{resolvedConditions:['Inpatient treatment']}},{context:{location:'home'},resolvedConditions:['Inpatient treatment']}]){
+  const packet=normalizeSceneResponse({changes:{persona:part}}),state=home();state.people.persona.context=normalizeContext({conditions:['Pregnant','Inpatient treatment','Leg injury']});
+  const result=resolveOutfit(state,packet.facts,owned);assert.deepEqual(result.state.people.persona.context.conditions,['Pregnant','Leg injury']);
+ }
 });

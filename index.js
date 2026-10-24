@@ -31,7 +31,7 @@ function startTask(label,{notify=true}={}){
 function finishTask(controller){if(analysisController!==controller)return;controller.trace?.finish('completed','작업·서버 저장 완료');analysisController=null;backgroundTask='';ui.toast(false);ui.refresh();if(deferredRead)schedule();}
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
 const sameIdentity=expected=>{const actual=host.identity();return !!expected&&actual?.id===expected.id&&actual.chat===expected.chat&&actual.personaKey===expected.personaKey;};
-const restoreActive=()=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcileDisplay(v.b,v.i.chat,messages,settings().displayLimit);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
+const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcile&&reconcileDisplay(v.b,v.i.chat,messages,settings().displayLimit);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
 const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!(v&&trustedTimeline(v.b,host.messages(),v.i.chat)),settings:settings(),injectionError,pending,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
  const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,profileId:settings().profileId});
@@ -257,7 +257,8 @@ if(eventTypes.GENERATION_STOPPED)eventSource.on(eventTypes.GENERATION_STOPPED,()
 if(eventTypes.CHAT_CHANGED)eventSource.on(eventTypes.CHAT_CHANGED,()=>{generationStopped=false;generating=false;cancel();restoreActive();ui.refresh();});
 if(eventTypes.CHAT_DELETED)eventSource.on(eventTypes.CHAT_DELETED,name=>{cancel();const i=host.identity();if(i)store.deleteChat(i.id,String(name).replace(/\.jsonl$/,''));ui.refresh();});
 if(eventTypes.CHAT_RENAMED)eventSource.on(eventTypes.CHAT_RENAMED,data=>{cancel();const id=String(data.avatarId||host.identity()?.id||'');const c=store.character(id);if(c){const old=String(data.oldFileName||'').replace(/\.jsonl$/,'');const fresh=String(data.newFileName||'').replace(/\.jsonl$/,'');for(const b of Object.values(c.branches)){b.links=b.links.map(x=>x===old?fresh:x);if(b.display?.heads?.[old]){b.display.heads[fresh]=b.display.heads[old];delete b.display.heads[old];}if(b.display?.chats?.[old]){b.display.chats[fresh]=b.display.chats[old];delete b.display.chats[old];}}store.save();}ui.refresh();});
-storage.onChange=()=>{cancel();store.invalidate();store.data=store.load();restoreActive();if(settings().enabled)outputGuard.install?.();else outputGuard.remove();ui.remoteRefresh();};
+// Remote updates can be ahead of the local ST chat. Viewing them must not prune or rewrite the remote timeline.
+storage.onChange=()=>{cancel();store.invalidate();store.data=store.load();restoreActive(false);if(settings().enabled)outputGuard.install?.();else outputGuard.remove();ui.remoteRefresh();};
 storage.onStatus=()=>ui.storageStatus();
 let syncing=false;
 async function syncFromServer(){if(syncing||document.hidden)return;syncing=true;try{await storage.pull();}catch(error){storage.notify(error.message);}finally{syncing=false;}}

@@ -7,7 +7,7 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.2';
+export const EXTENSION_VERSION='1.6.3';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -61,6 +61,7 @@ export function emptyState(){return ensureContexts({scene:{time:'불명',place:'
 export function sceneSummary(state){
  const summary={...(state?.sceneKo||{})},contexts=['character','persona'].map(who=>state?.people?.[who]?.context||{}),context=contexts.find(c=>c.location&&c.location!=='unknown')||contexts[0]||{};
  const labels={location:{home:'집',outside:'외부',work:'직장',school:'학교',hospital:'병원',other:'기타 장소'},phase:{resting:'휴식',washing:'씻는 중',after_washing:'씻은 후',sleeping:'수면',preparing:'준비 중',outdoors:'외출 중',working:'일하는 중',formal:'격식 있는 자리',care:'돌봄·치료'},weather:{mild:'온화',hot:'더움',cold:'추움',rain:'비',snow:'눈'}};
+ summary.activity=labels.phase[context.phase]||'';
  for(const [field,key] of [['place','location'],['activity','phase'],['weather','weather']])if(!summary[field]||summary[field]==='불명')summary[field]=labels[key][context[key]]||'';
  if(typeof context.temperature==='number'&&Number.isFinite(context.temperature)&&!String(summary.weather).includes('°')&&!String(summary.weather).includes('℃'))summary.weather=[summary.weather,context.temperature+'℃'].filter(Boolean).join(' · ');
  return summary;
@@ -361,6 +362,12 @@ export class Engine {
    this.attempts.delete(attemptKey);if(trace)trace.decision=parsed.outcome;
    const facts=parsed.facts,wardrobes=Object.fromEntries(['character','persona'].map(w=>[w,ownedItems({...b,extra,current:baseline},w)]));
    let resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles);
+   trace?.event('physical-state','신체 상태 추가·유지·해제',Object.fromEntries(['character','persona'].map(who=>{
+    const previous=baseline.people[who].context,next=resolved.state.people[who].context;
+    const key=value=>String(value).trim().toLowerCase().replace(/[.!]+$/,'');
+    const added=(old,values)=>values.filter(value=>!old.some(item=>key(item)===key(value)));
+    return [who,{retainedConditions:next.conditions.filter(value=>previous.conditions.some(item=>key(item)===key(value))),addedConditions:added(previous.conditions,next.conditions),resolvedConditions:added(next.conditions,previous.conditions),retainedNeeds:next.needs.filter(value=>previous.needs.some(item=>key(item)===key(value))),addedNeeds:added(previous.needs,next.needs),resolvedNeeds:added(next.needs,previous.needs)}];
+   })));
    trace?.event('decision','필요한 착장 변경 계산',{before:baseline.people,after:resolved.state.people,missing:resolved.missing});
    if(resolved.missing.length){
     if(!this.generate)throw Error('필요한 옷이 옷장에 없습니다. 기존 착장은 유지됩니다.');

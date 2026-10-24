@@ -4,7 +4,7 @@ import {Store,Engine,KEY,emptyState,recordDisplay,savedDisplay,pruneDisplayChat,
 import {needsOutfitRead} from '../scene-gate.js';
 import {registerOutfitMacro,injectPayload} from '../host.js';
 import {requireEnglishProfile,toModelData} from '../model-schema.js';
-import {normalizeContext,validateSceneFacts,resolveOutfit,sceneRequest} from '../outfit-rules.js';
+import {normalizeContext,normalizeSceneResponse,validateSceneFacts,resolveOutfit,sceneRequest} from '../outfit-rules.js';
 import {itemTraits} from '../wardrobe.js';
 
 const memory=()=>{const map=new Map();return {getItem:key=>map.get(key)||null,setItem:(key,value)=>map.set(key,value),removeItem:key=>map.delete(key)};};
@@ -92,7 +92,7 @@ test('실제 목욕만 탈의하고 계절/기온은 필요한 겉옷만 조정�
 });
 test('부족한 범주만 요청하고 잘못된 사실·코디 전체 응답은 거절한다',()=>{
  const result=resolveOutfit(home(),facts({location:'outside',space:'public',phase:'outdoors'}),{character:[shirt,pants,briefs],persona:[]});assert.deepEqual(result.missing,[{who:'character',category:'신발',reason:'public_coverage'}]);
- for(const invalid of [{people:{}},{changes:{character:{items:[]}}},{changes:{character:{context:{location:'Mars'}}}},{changes:{character:{context:{conditions:['임신']}}}},{changes:{character:{actions:[{op:'nude'},{op:'wear',category:'상의',name:'shirt'}]}}}])assert.throws(()=>validateSceneFacts(invalid));
+ for(const invalid of [{people:{}},{changes:{character:{items:[]}}},{changes:{character:{context:{location:'Mars'}}}}])assert.equal(normalizeSceneResponse(invalid).outcome,'unusable');
  const request=sceneRequest(home(),[message(1)]);assert.deepEqual(Object.keys(request),['people','contextMessages','messages']);assert.equal(request.wardrobes,undefined);assert.equal(request.profiles,undefined);assert.equal(request.people.character.worn[0].id,undefined);
 });
 test('변한 신체 인포는 읽고 같은 상태와 작은 시간 변화는 건너뛴다',()=>{
@@ -284,4 +284,37 @@ test('숫자로만 된 표시 키도 최근 순서대로 보관하고 반복 복
  const s=new Store(memory());s.createCharacter('c','C');const bid=s.createBranch('c','B'),branch=s.branch('c',bid);
  await new Engine(s,async()=>({changes:{}})).read('c',bid,messages,{chatId:'chat'});
  assert.equal(reconcileDisplay(branch,'chat',messages,1),false);assert.equal(reconcileDisplay(branch,'chat',messages,1),false);
+});
+
+
+test('표현·표시·추가 필드 차이는 정리하고 같은 실제 착장을 만든다',()=>{
+ const variants=[
+  {changes:{character:{context:{location:'outside',space:'public',phase:'outdoors'}}}},
+  {reason:'ignored',Changes:{CHAR:{Context:{LOCATION:' Outside. ',SPACE:'PUBLIC',PHASE:'outdoor',temperature:'22°C'},Actions:null,transition:'true'}},sceneKo:{place:'Main Street'}},
+  {result:{people:{Alex:{location:'outside',space:'public',phase:'outdoors',conditions:null}},extra:'ignored'}},
+  'Character:\nLocation: outside\nSpace: public\nPhase: outdoors',
+ ];
+ for(const raw of variants){const result=normalizeSceneResponse(raw,{names:{character:'Alex'}});assert.notEqual(result.outcome,'unusable');assert.deepEqual(ids(resolveOutfit(home(),result.facts,owned).state),['top','bottom','briefs','shoes']);}
+});
+test('동일 답변의 탈의·재착용은 실제 순서대로 처리한다',()=>{
+ const wear={op:'put on',category:'top',name:'Oxford shirt'};
+ for(const [actions,nude,worn] of [[[{op:'nude',category:'',name:null},wear],false,['top']],[[wear,{op:'nude'}],true,[]]]){
+  const packet=normalizeSceneResponse({changes:{character:{actions}}});assert.equal(packet.outcome,'applied');
+  const result=resolveOutfit(home(),packet.facts,owned);assert.equal(result.state.people.character.nude,nude);assert.deepEqual(ids(result.state),worn);
+ }
+});
+test('모호한 행동은 자동 환복을 보류하고 다른 인물의 확실한 행동은 살린다',()=>{
+ const raw={changes:{character:{context:{location:'outside',phase:'outdoors'},actions:{op:'mystery'}},persona:{actions:{op:'nude'}}}};
+ const parsed=normalizeSceneResponse(raw),initial=home();initial.people.character.items=[];initial.people.character.nude=true;
+ const result=resolveOutfit(initial,parsed.facts,owned);assert.equal(parsed.outcome,'partial');assert.equal(result.state.people.character.nude,true);assert.equal(result.state.people.persona.nude,true);assert.deepEqual(result.missing,[]);
+});
+
+test('이름을 해석하지 못한 탈의는 범주 전체 벗기로 확대하지 않는다',()=>{
+ const parsed=normalizeSceneResponse({changes:{character:{context:{location:'outside',phase:'outdoors'},actions:[{op:'remove',category:'top',name:'특정 셔츠'}]}}});
+ const result=resolveOutfit(home(),parsed.facts,owned);assert.ok(ids(result.state).includes('top'));assert.deepEqual(result.missing,[]);assert.equal(parsed.outcome,'partial');
+});
+test('선택 착용 상태의 길이 차이 때문에 의미가 분명한 조정을 거절하지 않는다',()=>{
+ const wearing='sleeves rolled to the elbow with the old fastening left loose';
+ const parsed=normalizeSceneResponse({changes:{character:{actions:{op:'adjust',category:'top',name:'Oxford shirt',wearing:wearing+'. '+wearing}}}});
+ const result=resolveOutfit(home(),parsed.facts,owned);assert.equal(result.state.people.character.items[0].wearing,wearing+'. '+wearing);
 });

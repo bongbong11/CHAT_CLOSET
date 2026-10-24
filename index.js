@@ -1,7 +1,7 @@
 import {getContext} from '../../../extensions.js';
 import {ConnectionManagerRequestService} from '../../shared.js';
 import * as worldInfo from '../../../world-info.js';
-import {Store,Engine,normalizeProfile,clone,prefixKeys,outfitInjection,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,memoryFromStates,hash,compactStoredData,reconcileDisplay,trimDisplay,trustedTimeline} from './core.js';
+import {Store,Engine,DiagnosticLog,normalizeProfile,clone,prefixKeys,outfitInjection,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,memoryFromStates,hash,compactStoredData,reconcileDisplay,trimDisplay,trustedTimeline} from './core.js';
 import {ANALYSIS,SCENE,OUTFIT_ITEMS,WARDROBE_FILL,WARDROBE_REBUILD,WARDROBE_LABELS} from './prompts.js';
 import {createHost,injectPayload,registerOutfitMacro} from './host.js';
 import {createUI} from './ui.js';
@@ -12,42 +12,45 @@ import {createMessageOutfits} from './message-outfits.js';
 import {requireEnglishProfile} from './model-schema.js';
 import {WARDROBE_TABS,wardrobeTargets,wardrobeDeficits,ownedItems,mergeWardrobe,composeWardrobe,replaceWardrobeCategory,requireKoreanLabels,missingLabels,completeLabels,applyLabels} from './wardrobe.js';
 
-const host=createHost(getContext,ConnectionManagerRequestService,worldInfo);
+const logs=new DiagnosticLog();
+const logScope=()=>{const i=host.identity(),v=current();return {character:i?.id,chat:i?.chat,branch:v?.bid,persona:i?.personaKey};};
+const host=createHost(getContext,ConnectionManagerRequestService,worldInfo,{logs,scope:()=>logScope(),trace:()=>analysisController?.trace});
 const outputGuard=installOutputGuard(getContext);
 let legacyStorage;try{legacyStorage=localStorage;}catch{}
-const storage=await new ServerStorage({headers:()=>getContext().getRequestHeaders(),legacy:legacyStorage}).init();
+const storage=await new ServerStorage({headers:()=>getContext().getRequestHeaders(),legacy:legacyStorage,logs}).init();
 const store=new Store(storage);
 const settings=()=>store.data.settings;
-const engine=new Engine(store,(system,data,signal,profileId)=>host.request(profileId,system,data,signal,'scene'),(data,signal,profileId)=>host.request(profileId,OUTFIT_ITEMS,data,signal,'items'));
+const engine=new Engine(store,(system,data,signal,profileId,trace)=>host.request(profileId,system,data,signal,'scene',trace),(data,signal,profileId,trace)=>host.request(profileId,OUTFIT_ITEMS,data,signal,'items',trace));
 let analysisController=null,backgroundTask='',deferredRead=false,deferredForce=false,revision=0,timer=null,prepared=null,pending=false,injectionError='',runningRead=null,readId=0,generating=false,generationStopped=false,messageView=null;
-const cancel=()=>{revision++;readId++;engine.cancel();analysisController?.abort();analysisController=null;backgroundTask='';deferredRead=false;deferredForce=false;runningRead=null;pending=false;prepared=null;clearTimeout(timer);timer=null;ui.toast(false);};
+const cancel=()=>{runningRead?.trace?.finish('cancelled','진행 중 판독 취소');analysisController?.trace?.finish('cancelled','진행 중 작업 취소');revision++;readId++;engine.cancel();analysisController?.abort();analysisController=null;backgroundTask='';deferredRead=false;deferredForce=false;runningRead=null;pending=false;prepared=null;clearTimeout(timer);timer=null;ui.toast(false);};
 function startTask(label,{notify=true}={}){
  if(analysisController)throw Error('진행 중인 작업이 있습니다. 창을 닫고 채팅하면서 기다릴 수 있습니다.');
  const catchUp=!!runningRead||!!timer;cancel();deferredRead=catchUp;
- const controller=new AbortController();analysisController=controller;backgroundTask=label;if(notify)ui.toast(true);ui.refresh();return controller;
+ const controller=new AbortController();controller.trace=logs.start('task',{...logScope(),label,profileId:settings().profileId});analysisController=controller;backgroundTask=label;if(notify)ui.toast(true);ui.refresh();return controller;
 }
-function finishTask(controller){if(analysisController!==controller)return;analysisController=null;backgroundTask='';ui.toast(false);ui.refresh();if(deferredRead)schedule();}
+function finishTask(controller){if(analysisController!==controller)return;controller.trace?.finish('completed','작업·서버 저장 완료');analysisController=null;backgroundTask='';ui.toast(false);ui.refresh();if(deferredRead)schedule();}
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
 const sameIdentity=expected=>{const actual=host.identity();return !!expected&&actual?.id===expected.id&&actual.chat===expected.chat&&actual.personaKey===expected.personaKey;};
 const restoreActive=()=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcileDisplay(v.b,v.i.chat,messages,settings().displayLimit);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
 const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!(v&&trustedTimeline(v.b,host.messages(),v.i.chat)),settings:settings(),injectionError,pending,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
- const expected=host.identity(),intent=readId;await storage.pull();
- if(intent!==readId||!sameIdentity(expected)||chat!==host.context().chat||(!force&&generationStopped))return null;
- const v=current();if(!settings().enabled||!v||v.b.suspended)return v?.b.current||null;
- if(generating||analysisController){deferredRead=true;deferredForce ||=force;return v.b.current;}
- if(v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('페르소나가 변경되었습니다. 새 브랜치를 만들어 분석하세요.');
+ const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,profileId:settings().profileId});
+ try{await storage.pull();}catch(error){trace.fail(error,'storage-pull');throw error;}
+ if(intent!==readId||!sameIdentity(expected)||chat!==host.context().chat||(!force&&generationStopped)){trace.finish('cancelled','서버 확인 중 판독 취소');return null;}
+ const v=current();if(!settings().enabled||!v||v.b.suspended){trace.finish('skipped','비활성 또는 연결된 브랜치 없음');return v?.b.current||null;}
+ if(generating||analysisController){trace.finish('deferred','생성·작업 완료 후 판독 대기');deferredRead=true;deferredForce ||=force;return v.b.current;}
+ if(v.b.personaKey&&v.b.personaKey!==v.i.personaKey){const error=Error('페르소나가 변경되었습니다. 새 브랜치를 만들어 분석하세요.');trace.fail(error,'identity');throw error;}
  const messages=host.messages(chat),messageKey=prefixKeys(messages).at(-1)||'root';
  const key=JSON.stringify([v.i.id,v.bid,messageKey,settings().chatTurns,settings().profileId]);
- if(runningRead?.key===key)return runningRead.promise;
+ if(runningRead?.key===key){trace.finish('deduplicated','진행 중인 같은 판독 사용');return runningRead.promise;}
  const id=++readId;
  const promise=(async()=>{
   try{
    if(!messages.length){engine.cancel();restoreActive();return v.b.current;}
-   return await engine.read(v.i.id,v.bid,messages,{force,gate:true,system:SCENE,profileId:settings().profileId,chatId:v.i.chat,names:{character:v.i.name,persona:v.i.userName},isCurrent:()=>sameIdentity(v.i)&&current()?.b===v.b&&(prefixKeys(host.messages()).at(-1)||'root')===messageKey,onRequest:()=>{pending=true;ui.toast(true);ui.refresh();}});
-  }finally{try{await storage.flush();}finally{if(id===readId){runningRead=null;pending=false;ui.toast(false);ui.refresh();}}}
+   return await engine.read(v.i.id,v.bid,messages,{force,gate:true,system:SCENE,profileId:settings().profileId,chatId:v.i.chat,trace,names:{character:v.i.name,persona:v.i.userName},isCurrent:()=>sameIdentity(v.i)&&current()?.b===v.b&&(prefixKeys(host.messages()).at(-1)||'root')===messageKey,onRequest:()=>{pending=true;ui.toast(true);ui.refresh();}});
+  }catch(error){trace.fail(error,'read');throw error;}finally{try{await storage.flush();trace.finish(trace.decision||'unchanged','판독·서버 저장 완료');}catch(error){trace.fail(error,'storage');throw error;}finally{if(id===readId){runningRead=null;pending=false;ui.toast(false);ui.refresh();}}}
  })();
- runningRead={id,key,messageKey,promise};return promise;
+ runningRead={id,key,messageKey,promise,trace};return promise;
 }
 async function analyze(selection){
  const expected=host.identity();await storage.pull();
@@ -92,7 +95,7 @@ async function analyze(selection){
   v.b.analysisSources={targets:[...new Set([...previous.targets,who])],selected:{...previous.selected,[who]:(sources.lore||[]).map(x=>JSON.stringify([x.book,String(x.uid)]))}};
   v.b.personaKey=i.personaKey;v.b.suspended=false;
   store.save();await storage.flush();ui.refresh();return true;
- }finally{finishTask(controller);}
+ }catch(error){controller.trace?.fail(error,'apply');throw error;}finally{finishTask(controller);}
 }
 async function refillWardrobe(who,categoryId='all'){
  const expected=current();await storage.pull();
@@ -140,7 +143,7 @@ async function refillWardrobe(who,categoryId='all'){
   v.b.keys=processedKeys;const last=v.b.keys.at(-1);
   if(last)v.b.checkpoints[last]={state:clone(v.b.current),extra:clone(v.b.extra),history:[],outfits:[],outfitMemory:clone(v.b.outfitMemory)};
   store.save();await storage.flush();ui.refresh();return true;
- }finally{finishTask(controller);}
+ }catch(error){controller.trace?.fail(error,'apply');throw error;}finally{finishTask(controller);}
 }
 async function translateProfile(who,profile){
  const expected=host.identity();await storage.pull();
@@ -153,7 +156,7 @@ async function translateProfile(who,profile){
   if(controller.signal.aborted||rev!==revision||epoch!==store.epoch||current()?.b!==v.b||host.identity()?.personaKey!==v.i.personaKey||hash(JSON.stringify(v.b.profiles[who]?.fields))!==signature)return null;
   v.b.reportTranslations??={};v.b.reportTranslations[who]={signature,fields:Object.fromEntries(Object.entries(translated.fields).map(([key,field])=>[key,{value:field.value,evidence:field.evidence}])),language:'ko'};
   store.save();await storage.flush();return translated;
- }finally{finishTask(controller);}
+ }catch(error){controller.trace?.fail(error,'apply');throw error;}finally{finishTask(controller);}
 }
 async function cleanup(){
  if(generating||analysisController||runningRead)throw Error('채팅 생성·의상 작업이 끝난 뒤 정리해 주세요.');
@@ -166,7 +169,7 @@ async function cleanup(){
   const sameChat=host.context().chat===chat&&host.identity()?.id===identity?.id&&host.identity()?.chat===identity?.chat;
   const messages=!generating&&sameChat?await sanitizeSavedOutputs(getContext,{report:true,onlyInternal:true}):{messages:0,swipes:0};
   ui.refresh();return {...result,records:compact.total+displayRemoved,messages:messages.messages,swipes:messages.swipes,chatSkipped:generating||!sameChat};
- }finally{finishTask(controller);}
+ }catch(error){controller.trace?.fail(error,'apply');throw error;}finally{finishTask(controller);}
 }
 async function newBranch(mode,name,bid){
  const expected=host.identity();await storage.pull();
@@ -193,7 +196,7 @@ async function newBranch(mode,name,bid){
  store.bind(i.id,target,i.chat);store.branch(i.id,target).personaKey=i.personaKey;restoreActive();store.save();ui.refresh();
 }
 const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>messageView?.refresh(),profiles:()=>host.profiles(),sheet:kind=>host.sheet(kind),lore:kind=>host.lore(kind),analyze,refillWardrobe,read:()=>read(undefined,true),newBranch,
- flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),cleanup,
+ logs,logError:error=>logs.error(error,logScope()),flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),cleanup,
  translateProfile,
  saveReportTranslation(who,source,translated,language){const v=current();if(!v||hash(JSON.stringify(v.b.profiles[who]?.fields))!==hash(JSON.stringify(source.fields)))return;v.b.reportTranslations??={};if(translated)v.b.reportTranslations[who]={signature:hash(JSON.stringify(source.fields)),fields:Object.fromEntries(Object.entries(translated.fields).map(([key,field])=>[key,{value:field.value,evidence:field.evidence}])),language};else if(v.b.reportTranslations[who])v.b.reportTranslations[who].language=language;store.save();},
  updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked','profileId','displayMode','displayLimit','brands'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);if(Object.hasOwn(patch,'displayLimit')){for(const character of Object.values(store.data.characters))for(const branch of Object.values(character.branches))trimDisplay(branch,settings().displayLimit);restoreActive();}store.save();ui.refresh();},
@@ -207,7 +210,7 @@ messageView=createMessageOutfits({base:new URL('.',import.meta.url),context:getC
  const v=current();if(!v)return;const saved=savedDisplay(v.b,v.i.chat,message,prefix);if(!saved)return;
  if(typeof patch.folded==='boolean')saved.record.folded=patch.folded;
  if(['character','persona'].includes(patch.tab))saved.record.tab=patch.tab;
- try{store.save();storage.flush().catch(error=>ui.error(error.message));}catch(error){ui.error(error.message);}
+ try{store.save();storage.flush().catch(error=>ui.error(error));}catch(error){ui.error(error);}
 }});
 // Main RP generation never waits for, or asks for output from, the wardrobe reader.
 globalThis.kikkiClosetInterceptor=(_chat,_size,abort,type)=>{
@@ -229,12 +232,12 @@ const schedule=()=>{
  if(generating||analysisController){deferredRead=true;return;}
  const messageKey=prefixKeys(host.messages()).at(-1)||'root';
  if(runningRead&&runningRead.messageKey!==messageKey){engine.cancel();readId++;runningRead=null;pending=false;ui.toast(false);}
- clearTimeout(timer);timer=setTimeout(()=>{timer=null;if(generating||analysisController){deferredRead=true;return;}const force=deferredForce;deferredRead=false;deferredForce=false;read(undefined,force).catch(e=>{if(e.name!=='AbortError')ui.error(e.message);});},300);
+ clearTimeout(timer);timer=setTimeout(()=>{timer=null;if(generating||analysisController){deferredRead=true;return;}const force=deferredForce;deferredRead=false;deferredForce=false;read(undefined,force).catch(e=>{if(e.name!=='AbortError')ui.error(e);});},300);
 };
 if(eventTypes.GENERATION_STARTED)eventSource.on(eventTypes.GENERATION_STARTED,(type,_options,dryRun)=>{
  if(dryRun||['quiet','impersonate'].includes(type))return;generationStopped=false;generating=true;if(runningRead){stopReader();deferredRead=true;}if(timer)deferredRead=true;clearTimeout(timer);timer=null;
 });
-function stopReader(){engine.cancel();readId++;runningRead=null;pending=false;prepared=null;clearTimeout(timer);timer=null;ui.toast(false);}
+function stopReader(){runningRead?.trace?.finish('cancelled','판독 취소 · 채팅/생성 변경');engine.cancel();readId++;runningRead=null;pending=false;prepared=null;clearTimeout(timer);timer=null;ui.toast(false);}
 // Structural edits invalidate immediately; they do not launch a recovery request.
 function changedChat(){
  const v=current();if(!v)return;

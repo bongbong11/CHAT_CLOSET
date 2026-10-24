@@ -1,12 +1,50 @@
 import {needsOutfitRead} from './scene-gate.js';
 import {wardrobeLevel,ownedItems,normalizeTraits,itemTraits} from './wardrobe.js';
-import {ensureContexts,validateSceneFacts,resolveOutfit,sceneRequest} from './outfit-rules.js';
+import {ensureContexts,normalizeSceneResponse,resolveOutfit,sceneRequest} from './outfit-rules.js';
 
 export const KEY = 'kikki-closet:v1';
 export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'];
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
+export const EXTENSION_VERSION='1.6.2';
+const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
+function diagnosticValue(value,seen=new WeakSet()){
+ if(typeof value==='string')return redactString(value);
+ if(value instanceof Error){if(seen.has(value))return '[circular error]';seen.add(value);const result={name:value.name,message:redactString(value.message),stack:redactString(value.stack||''),cause:value.cause?diagnosticValue(value.cause,seen):undefined};seen.delete(value);return result;}
+ if(!value||typeof value!=='object')return value;
+ if(seen.has(value))return '[circular]';seen.add(value);
+ const result=Array.isArray(value)?value.map(v=>diagnosticValue(v,seen)):Object.fromEntries(Object.entries(value).map(([key,v])=>[key,/^(?:api.?key|authorization|cookies?|headers|password|access.?token|refresh.?token|secret)$/i.test(key)?'[redacted]':diagnosticValue(v,seen)]));
+ seen.delete(value);return result;
+}
+export class DiagnosticLog{
+ constructor({limit=30,bytes=2*1024*1024,console:output=globalThis.console}={}){this.limit=limit;this.bytes=bytes;this.output=output;this.records=[];this.listeners=new Set();this.serial=0;this.reported=new WeakSet();}
+ subscribe(fn){this.listeners.add(fn);return ()=>this.listeners.delete(fn);}
+ notify(){
+  const size=()=>new TextEncoder().encode(JSON.stringify(this.records)).length;
+  while(this.records.length>this.limit||this.records.length>1&&size()>this.bytes)this.records.shift();
+  if(this.records.length&&size()>this.bytes){
+   const row=this.records[0];row.truncated=true;
+   for(const event of row.events){if(size()<=this.bytes)break;const original=JSON.stringify(event.data);event.data={truncated:true,originalBytes:new TextEncoder().encode(original||'').length,preview:(original||'').slice(0,Math.max(0,Math.floor(this.bytes/16)))};}
+   while(row.events.length>2&&size()>this.bytes)row.events.splice(1,1);
+  }
+  for(const fn of this.listeners)try{fn();}catch{}
+ }
+ start(type,scope={}){
+  const row={id:type+'-'+Date.now().toString(36)+'-'+(++this.serial),version:EXTENSION_VERSION,time:new Date().toISOString(),timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,type,scope:diagnosticValue(scope),outcome:'running',events:[]};this.records.push(row);const started=Date.now(),log=this;
+  const trace={id:row.id,get ended(){return row.outcome!=='running';},get outcome(){return row.outcome;},event(stage,message,data,level='info'){
+   row.events.push({time:new Date().toISOString(),elapsedMs:Date.now()-started,stage,level,message,data:diagnosticValue(data)});
+   const c=log.output;c?.groupCollapsed?.('[Kikki Closet]['+row.id+'] '+message);(level==='error'?c?.error:level==='warn'?c?.warn:c?.info)?.call(c,{stage,data:diagnosticValue(data)});c?.groupEnd?.();log.notify();
+  },finish(outcome,message,data){if(trace.ended)return;row.outcome=outcome;trace.event('result',message,data,outcome==='unusable'||outcome==='partial'?'warn':'info');},
+  fail(error,stage='execution'){if(error&&typeof error==='object')log.reported.add(error);if(trace.ended)return;row.outcome=error?.name==='AbortError'?'cancelled':'error';trace.event(stage,error?.message||String(error),error,row.outcome==='error'?'error':'info');}};
+  trace.event('start','작업 시작',scope);return trace;
+ }
+ error(error,scope={}){if(error&&typeof error==='object'&&this.reported.has(error))return;this.start('error',scope).fail(error);}
+ list(){return clone(this.records).reverse();}
+ copy(id){return JSON.stringify({extension:'Kikki Closet',version:EXTENSION_VERSION,exportedAt:new Date().toISOString(),records:id?this.list().filter(row=>row.id===id):this.list()},null,2);}
+ clear(){this.records=[];this.notify();}
+}
+
 export function compactStoredData(source){
  const data=clone(source),removed={translations:0,history:0,outfits:0,checkpoints:0,display:0};
  for(const character of Object.values(data.characters))for(const branch of Object.values(character.branches)){
@@ -20,8 +58,16 @@ export function compactStoredData(source){
 export function branchId(){if(globalThis.crypto?.randomUUID)return crypto.randomUUID();const bytes=new Uint32Array(4);globalThis.crypto.getRandomValues(bytes);return 'branch-'+[...bytes].map(x=>x.toString(16).padStart(8,'0')).join('');}
 export const text = (x,n=400) => typeof x==='string'?x.replace(/<\/?kikki_outfit\b[^>]*>/gi,'').trim().slice(0,n):'';
 export function emptyState(){return ensureContexts({scene:{time:'불명',place:'불명',activity:'불명',weather:'불명'},people:{character:{nude:false,items:[]},persona:{nude:false,items:[]}}});}
+export function sceneSummary(state){
+ const summary={...(state?.sceneKo||{})},contexts=['character','persona'].map(who=>state?.people?.[who]?.context||{}),context=contexts.find(c=>c.location&&c.location!=='unknown')||contexts[0]||{};
+ const labels={location:{home:'집',outside:'외부',work:'직장',school:'학교',hospital:'병원',other:'기타 장소'},phase:{resting:'휴식',washing:'씻는 중',after_washing:'씻은 후',sleeping:'수면',preparing:'준비 중',outdoors:'외출 중',working:'일하는 중',formal:'격식 있는 자리',care:'돌봄·치료'},weather:{mild:'온화',hot:'더움',cold:'추움',rain:'비',snow:'눈'}};
+ for(const [field,key] of [['place','location'],['activity','phase'],['weather','weather']])if(!summary[field]||summary[field]==='불명')summary[field]=labels[key][context[key]]||'';
+ if(typeof context.temperature==='number'&&Number.isFinite(context.temperature)&&!String(summary.weather).includes('°')&&!String(summary.weather).includes('℃'))summary.weather=[summary.weather,context.temperature+'℃'].filter(Boolean).join(' · ');
+ return summary;
+}
 export function hash(value){let h=2166136261;for(const c of String(value)){h^=c.charCodeAt(0);h=Math.imul(h,16777619);}return (h>>>0).toString(36);}
-export function visibleMessages(chat){return chat.flatMap((m,i)=>m.is_system||m.is_hidden||m.extra?.is_hidden?[]:[{id:String(m.extra?.kikki_id||m.send_date||i),swipe:m.swipe_id??0,role:m.is_user?'user':'character',name:text(m.name,80),content:text(String(m.mes||'').replace(/<kikki_outfit\s*>[\s\S]*?<\/kikki_outfit\s*>/gi,''),12000)}]);}
+const sceneText=value=>{const source=String(value||'').replace(/<kikki_outfit\s*>[\s\S]*?<\/kikki_outfit\s*>/gi,'');return source.length>12000?source.slice(0,9000)+'\n[Middle omitted; latest context retained]\n'+source.slice(-3000):source;};
+export function visibleMessages(chat){return chat.flatMap((m,i)=>m.is_system||m.is_hidden||m.extra?.is_hidden?[]:[{id:String(m.extra?.kikki_id||m.send_date||i),swipe:m.swipe_id??0,role:m.is_user?'user':'character',name:text(m.name,80),content:sceneText(m.mes)}]);}
 export function prefixKeys(messages){let key='root';return messages.map(m=>(key=hash(key+JSON.stringify(m))));}
 export const displayLimit=value=>Math.max(1,Math.min(20,Math.floor(Number(value))||1));
 export function displayKey(message){return hash(JSON.stringify([message.id,message.swipe??0,message.content]));}
@@ -35,7 +81,7 @@ export function recordDisplay(branch,chatId,messages,state,limit=1){
  const index=messages.findLastIndex(message=>message.role==='character');
  const message=messages[index];if(!chatId||message?.role!=='character')return;
  branch.display??={chats:{},snapshots:{}};
- const display=branch.display,snapshot={sceneKo:clone(state.sceneKo||{}),people:Object.fromEntries(['character','persona'].map(who=>[who,{nude:!!state.people[who].nude,items:clone(state.people[who].items)}]))};
+ const display=branch.display,snapshot={sceneKo:sceneSummary(state),people:Object.fromEntries(['character','persona'].map(who=>[who,{nude:!!state.people[who].nude,items:clone(state.people[who].items),context:clone(state.people[who].context||{})}]))};
  const serialized=JSON.stringify(snapshot);let key=hash(serialized),n=0;
  while(display.snapshots[key]&&JSON.stringify(display.snapshots[key])!==serialized)key=hash(serialized)+'-'+(++n);
  display.snapshots[key]=snapshot;
@@ -148,7 +194,22 @@ export function itemDescription(item,detail=2){
 }
 export function outfitText(state, detail=2, brands=true){return ['character','persona'].flatMap((who)=>{const p=state?.people?.[who];if(!p||p.nude||!p.items.length)return [];return [(who==='character'?'Character':'Persona')+': '+p.items.map(i=>itemDescription(i,detail)+(brands&&i.brand?' ('+i.brand+')':'')+(i.wearing?' ['+text(i.wearing,80)+']':'')).join(', ')+'.'];}).join('\n');}
 export function replaceTags(value,content,{keep=true}={}){let found=0;const replaced=String(value).replace(/<kikki_outfit\s*>[\s\S]*?<\/kikki_outfit\s*>/gi,()=>{found++;return found===1&&keep?`<kikki_outfit>\n${content}\n</kikki_outfit>`:'';});return {text:replaced,found,malformed:(!found&&/<\/?kikki_outfit\b/i.test(value))};}
-export function parseJSON(reply){if(typeof reply==='object'&&reply!==null&&!Array.isArray(reply))return reply;let str=String(reply??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');const first=str.indexOf('{'),last=str.lastIndexOf('}');if(first>=0&&last>first)str=str.slice(first,last+1);let value;try{value=JSON.parse(str);}catch{throw Error('모델이 올바른 JSON 형식으로 응답하지 않았습니다. 자동으로 한 번 고쳐서 다시 확인합니다.');}if(!value||typeof value!=='object'||Array.isArray(value))throw Error('모델 응답이 JSON 객체 형식이 아닙니다.');return value;}
+export function parseJSON(reply,{array=false}={}){
+ if(reply&&typeof reply==='object'&&(!Array.isArray(reply)||array))return reply;
+ let str=String(reply??'').replace(/^\uFEFF/,'').trim().replace(/^\x60{3}(?:json)?\s*/i,'').replace(/\s*\x60{3}$/,'');
+ const first=str.search(array?/[{\[]/:/{/);if(first>=0)str=str.slice(first);
+ let quoted=false,escaped=false,depth=0,end=-1,clean='';
+ for(let i=0;i<str.length;i++){
+  const c=str[i];if(quoted){clean+=c;if(escaped)escaped=false;else if(c==='\\')escaped=true;else if(c==='"')quoted=false;continue;}
+  if(c==='"'){quoted=true;clean+=c;continue;}
+  if(c===','&&/^\s*[}\]]/.test(str.slice(i+1)))continue;
+  clean+=c;if(c==='{'||c==='[')depth++;else if(c==='}'||c===']'){depth--;if(depth===0){end=clean.length;break;}}
+ }
+ if(end>=0)clean=clean.slice(0,end);
+ let value;try{value=JSON.parse(clean);}catch(error){throw Error('응답 내용을 JSON으로 읽지 못했습니다.',{cause:error});}
+ if(!value||typeof value!=='object'||Array.isArray(value)&&!array)throw Error('응답에 읽을 수 있는 정보가 없습니다.');
+ return value;
+}
 export function normalizeItem(raw){
  if(!raw||!CATEGORIES.includes(raw.category)||!text(raw.name,100))throw Error('아이템의 카테고리나 이름이 잘못되었습니다.');
  if(missingBrand(raw.brand))throw Error('새 의상의 브랜드 또는 제작 정보가 빠졌습니다. 다시 판독해 주세요.');
@@ -196,7 +257,7 @@ export function validateState(value,wardrobes){
    const source=registry.get(item?.id);
    if(!source||source.available===false||seen.has(item.id))throw Error('보유 옷에서 찾을 수 없는 아이템입니다.');
    for(const key of ['name','category','color','brand'])if(item[key]!==source[key])throw Error('기존 의상의 이름·색상·브랜드는 변경할 수 없습니다.');
-   if(item.wearing!==undefined&&(typeof item.wearing!=='string'||item.wearing.length>80))throw Error('착용 상태가 너무 깁니다.');
+   if(item.wearing!==undefined&&typeof item.wearing!=='string')throw Error('착용 상태 내용을 읽을 수 없습니다.');
    seen.add(item.id);
   }
  }
@@ -261,14 +322,14 @@ export class Store {
 
 }
 export class Engine {
- constructor(store,request,generate){this.store=store;this.request=request;this.generate=generate;this.controller=null;this.serial=0;}
+ constructor(store,request,generate){this.store=store;this.request=request;this.generate=generate;this.controller=null;this.serial=0;this.attempts=new Map();}
  cancel(){this.serial++;this.controller?.abort();this.controller=null;}
- async read(id,bid,messages,{force=false,system,gate=false,onRequest=()=>{},profileId,chatId,names={},isCurrent=()=>true}={}){
+ async read(id,bid,messages,{force=false,system,gate=false,onRequest=()=>{},profileId,chatId,names={},trace,isCurrent=()=>true}={}){
   this.cancel();const serial=this.serial,epoch=this.store.epoch,b=this.store.branch(id,bid);
   if(!b||b.suspended)return null;
   const keys=prefixKeys(messages),key=keys.at(-1)||'root';
   const timeline=chatId?trustedTimeline(b,messages,chatId):null;
-  if(!force&&key===b.keys.at(-1)&&(!chatId||timeline)){if(chatId&&reconcileDisplay(b,chatId,messages,this.store.data.settings.displayLimit))this.store.save();return b.current;}
+  if(!force&&key===b.keys.at(-1)&&(!chatId||timeline)){trace?.event('gate','이미 처리한 메시지',{});if(chatId&&reconcileDisplay(b,chatId,messages,this.store.data.settings.displayLimit))this.store.save();return b.current;}
   let baseline=ensureContexts(clone(b.base)),extra=clone(b.baseExtra||{character:[],persona:[]}),history=[],outfits=[],memory=clone(b.baseMemory||memoryFromStates([b.base])),start=0;
   for(let i=keys.length-1;i>=0;i--)if(b.checkpoints[keys[i]]&&(!chatId||timeline?.key===keys[i])){
    const cp=b.checkpoints[keys[i]];baseline=ensureContexts(clone(cp.state));extra=clone(cp.extra);history=clone(cp.history);outfits=clone(cp.outfits);memory=clone(cp.outfitMemory||memoryFromStates([b.base,...cp.history,cp.state]));start=i+1;break;
@@ -276,21 +337,36 @@ export class Engine {
   if(chatId&&!timeline){baseline=emptyState();extra=clone(b.extra);history=[];outfits=[];memory={};start=0;}
   const added={character:[],persona:[]};let state=baseline;
   const needsRead=force||chatId&&!timeline||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
+  const attemptKey=JSON.stringify([id,bid,chatId,key,profileId,epoch]);
+  if(!force&&this.attempts.has(attemptKey)){trace?.finish('unusable','같은 응답의 자동 재시도 생략',{reason:this.attempts.get(attemptKey)});return null;}
+  trace?.event('gate',needsRead?'새 장면 판독':'변화 후보 없음 · 착장 유지',{force,start,messageCount:messages.length,chatId,names});
+
   if(needsRead){
    this.controller=new AbortController();const signal=this.controller.signal;
    const valid=()=>!signal.aborted&&serial===this.serial&&epoch===this.store.epoch&&this.store.branch(id,bid)===b&&isCurrent();
    const windowStart=recentTurnStart(messages,this.store.data.settings.chatTurns);
-   const request=sceneRequest(baseline,messages.slice(Math.max(start,windowStart)),messages.slice(windowStart,Math.max(windowStart,start)),names);
+   const evidenceStart=force?Math.max(windowStart,messages.findLastIndex(message=>message.role==='character')):Math.max(start,windowStart);
+   const request=sceneRequest(baseline,messages.slice(evidenceStart),messages.slice(windowStart,evidenceStart),names);
+   if(force)request.reread=true;
+   trace?.event('context','현재 상황 판독 범위',{reread:force,evidenceStart,latestEvidence:request.messages.map(({id,role,swipe,content})=>({id,role,swipe,characters:content.length,hasInfoBlock:/<[^>]*(?:info|status)|(?:location|loc|장소|위치)\s*[:：]/i.test(content)})),backgroundMessages:request.contextMessages.length});
    if(windowStart>start)request.omittedEarlierMessages=windowStart-start;
    onRequest();
-   const raw=await this.request(system,request,signal,profileId);if(!valid())return null;
-   const facts=validateSceneFacts(raw),wardrobes=Object.fromEntries(['character','persona'].map(w=>[w,ownedItems({...b,extra,current:baseline},w)]));
+   let raw;try{raw=await this.request(system,request,signal,profileId,trace);}catch(error){if(error.kind==='connection'){this.attempts.set(attemptKey,error.message);while(this.attempts.size>30)this.attempts.delete(this.attempts.keys().next().value);}throw error;}if(!valid()){trace?.finish('cancelled','변경된 채팅의 늦은 응답 폐기');return null;}
+   const parsed=raw?.sceneResult?raw:normalizeSceneResponse(raw,{names});
+   if(!raw?.sceneResult)trace?.event('normalize','장면 내용 해석',parsed);
+   if(parsed.outcome==='unusable'){
+    this.attempts.set(attemptKey,'장면 내용을 확인하지 못함');while(this.attempts.size>30)this.attempts.delete(this.attempts.keys().next().value);
+    trace?.finish('unusable','확인된 착장 유지 · 응답 내용 확인 보류',{unresolved:parsed.unresolved});this.controller=null;return null;
+   }
+   this.attempts.delete(attemptKey);if(trace)trace.decision=parsed.outcome;
+   const facts=parsed.facts,wardrobes=Object.fromEntries(['character','persona'].map(w=>[w,ownedItems({...b,extra,current:baseline},w)]));
    let resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles);
+   trace?.event('decision','필요한 착장 변경 계산',{before:baseline.people,after:resolved.state.people,missing:resolved.missing});
    if(resolved.missing.length){
     if(!this.generate)throw Error('필요한 옷이 옷장에 없습니다. 기존 착장은 유지됩니다.');
     const profiles=Object.fromEntries([...new Set(resolved.missing.map(n=>n.who))].map(who=>[who,{fields:Object.fromEntries(Object.entries(b.profiles[who]?.fields||{}).filter(([name])=>['나이대','직업','생활수준','세계관','복식 규칙','배경·복식 문화','브랜드 성향','스타일','색상','고정 조건'].includes(name)).map(([name,field])=>[name,{value:text(field.value,160)}]))}]));
-    const generated=await this.generate({missing:resolved.missing,profiles,contexts:Object.fromEntries(Object.keys(profiles).map(who=>[who,resolved.state.people[who].context]))},signal,profileId);
-    if(!valid())return null;
+    const generated=await this.generate({missing:resolved.missing,profiles,contexts:Object.fromEntries(Object.keys(profiles).map(who=>[who,resolved.state.people[who].context]))},signal,profileId,trace);
+    if(!valid()){trace?.finish('cancelled','취소된 의상 생성 결과 폐기');return null;}
     if(!generated||typeof generated!=='object'||!generated.newItems||Object.keys(generated).some(k=>k!=='newItems')||Object.keys(generated.newItems).some(k=>!['character','persona'].includes(k)))throw Error('필요한 의상 생성 형식이 맞지 않습니다. 기존 착장은 유지됩니다.');
     for(const who of ['character','persona']){
      const items=generated.newItems[who]||[],needs=resolved.missing.filter(n=>n.who===who);
@@ -306,13 +382,14 @@ export class Engine {
     resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles);
     if(resolved.missing.length)throw Error('생성된 옷이 현재 조건을 충족하지 못했습니다. 기존 착장은 유지됩니다.');
    }
-   if(!valid())return null;
+   if(!valid()){trace?.finish('cancelled','취소된 판독 결과 폐기');return null;}
    state=validateState(resolved.state,wardrobes);
   }
   const changed=JSON.stringify(state)!==JSON.stringify(baseline);
   const nextMemory=updateOutfitMemory(memory,baseline,state);
   for(const who of ['character','persona']){const merged=new Map(extra[who].map(i=>[i.id,i]));for(const item of added[who])merged.set(item.id,item);extra[who]=[...merged.values()];}
   if(changed){history.push(clone(baseline));history=history.slice(-5);const outfit=outfitText(state);if(outfit&&outfits.at(-1)!==outfit)outfits.push(outfit);outfits=outfits.slice(-10);}
+  trace?.event('apply',changed?'착장 변경 적용':'확인된 착장 유지',{people:state.people,changed});
   Object.assign(b,{current:state,keys,extra,history,outfits,outfitMemory:nextMemory});
   b.checkpoints[key]={state:clone(state),extra:clone(extra),history:clone(history),outfits:clone(outfits),outfitMemory:clone(nextMemory)};
   for(const stale of Object.keys(b.checkpoints).slice(0,-80))delete b.checkpoints[stale];

@@ -14,10 +14,14 @@ const object=value=>value&&typeof value==='object'&&!Array.isArray(value);
 // A temporary snapshot in the catalog makes interrupted multi-file saves recoverable.
 // It is removed only after every character write/deletion has been verified.
 export class ServerStorage {
- constructor({fetch:request=(...args)=>globalThis.fetch(...args),headers,legacy,onChange=()=>{},onStatus=()=>{}}){
-  Object.assign(this,{request,headers,legacy,onChange,onStatus});this.remote=null;this.value=null;this.pending=undefined;this.job=null;this.error=null;this.ready=false;this.status='서버 저장소 연결 중';this.legacyAvailable=false;this.cache=new Map();this.attempt=null;this.cleanupCandidates=[];this.deletedFiles=0;this.completedTransactions=0;
+ constructor({fetch:request=(...args)=>globalThis.fetch(...args),headers,legacy,onChange=()=>{},onStatus=()=>{},logs}){
+  Object.assign(this,{request,headers,legacy,onChange,onStatus,logs});this.remote=null;this.value=null;this.pending=undefined;this.job=null;this.error=null;this.ready=false;this.status='서버 저장소 연결 중';this.legacyAvailable=false;this.cache=new Map();this.attempt=null;this.cleanupCandidates=[];this.deletedFiles=0;this.completedTransactions=0;
  }
- notify(status){this.status=status;this.onStatus(status);}
+ notify(status){
+  this.status=status;this.onStatus(status);
+  if(/서버에 저장 중|서버에서 삭제 중/.test(status)&&(!this.trace||this.trace.ended))this.trace=this.logs?.start('storage',{status});
+  if(status==='서버 저장됨')this.trace?.finish('saved','서버 저장 완료',{files:[...this.cache.keys()]});
+ }
  characterPath(id){const file=this.remote?.manifest?.characters?.[id]?.file;return file?`user/files/${file}`:'';}
  async fetchFile(name){
   if(name!==FILE_NAME&&!characterFile(name))throw Error('의상실 저장 파일 경로가 잘못되었습니다.');
@@ -100,7 +104,7 @@ export class ServerStorage {
     const importing=!this.remote;if(importing)this.value=validate(JSON.parse(old));this.setItem(KEY,JSON.stringify(this.value));await this.flush();if(importing)this.clearLegacy();
    }
    this.error=null;this.notify('서버 저장됨');return this;
-  }catch(error){this.error=error;this.ready=false;this.notify('서버 연결 실패 · 다시 연결하세요');return this;}
+  }catch(error){this.error=error;this.ready=false;this.logs?.error(error,{stage:'storage-init'});this.notify('서버 연결 실패 · 다시 연결하세요');return this;}
  }
  clearLegacy(){this.legacy?.removeItem(KEY);this.legacyAvailable=false;}
  getItem(){return this.value===null?null:JSON.stringify(this.value);}
@@ -114,7 +118,7 @@ export class ServerStorage {
  }
  start(){
   if(this.job)return;
-  this.job=Promise.resolve().then(()=>this.drain()).catch(error=>{this.error=error;this.notify(error.message);}).finally(()=>{this.job=null;if(!this.error&&this.pending!==undefined)this.start();});
+  this.job=Promise.resolve().then(()=>this.drain()).catch(error=>{this.error=error;this.trace?.fail(error,'storage');this.notify(error.message);}).finally(()=>{this.job=null;if(!this.error&&this.pending!==undefined)this.start();});
  }
  async drain(){
   while(this.pending!==undefined){

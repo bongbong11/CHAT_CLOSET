@@ -3,6 +3,23 @@ import {CATEGORIES,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabe
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const PEOPLE=['character','persona'];
 
+export function collectedHtml(state,names={}){
+ const labels={location:{home:'집',outside:'외부',work:'직장',school:'학교',hospital:'병원',other:'기타'},space:{private:'사적 공간',public:'공공 공간'},phase:{resting:'휴식',washing:'씻는 중',after_washing:'씻은 후',sleeping:'수면',preparing:'준비',outdoors:'외출',working:'업무',formal:'격식 있는 자리',care:'돌봄·치료'},season:{spring:'봄',summer:'여름',autumn:'가을',winter:'겨울'},weather:{mild:'온화',hot:'더움',cold:'추움',rain:'비',snow:'눈'},purpose:{casual:'일상',work:'업무',formal:'격식',care:'돌봄·치료'},exception:{barefoot:'명시된 맨발 유지',undressed:'명시된 탈의 유지',keep:'현재 상태 유지'}};
+ const fields=[['location','장소'],['space','공간'],['phase','활동'],['conditions','신체 상태'],['needs','착용 제약'],['season','계절'],['temperature','기온'],['weather','날씨'],['purpose','용도'],['exception','현재 예외']];
+ const people=PEOPLE.map(who=>{
+  const context=state?.people?.[who]?.context||{};
+  const rows=fields.map(([key,label])=>{const value=context[key];let shown;
+   if(Array.isArray(value))shown=value.length?value.map(v=>({pregnant:'임신',Pregnant:'임신',Injured:'부상',injured:'부상'}[v]||v)).join(' · '):'확인된 내용 없음';
+   else if(key==='temperature')shown=typeof value==='number'?value+'℃':'미확인';
+   else if(key==='exception')shown=labels[key][value]||(value?'미확인':'명시된 예외 없음');
+   else shown=labels[key]?.[value]||'미확인';
+   return '<div><dt>'+label+'</dt><dd>'+escape(shown)+'</dd></div>';
+  }).join('');
+  return '<section><strong>'+escape(names[who]||(who==='character'?'캐릭터':'페르소나'))+'</strong><dl>'+rows+'</dl></section>';
+ }).join('');
+ return '<details class="kc-collected"><summary>수집된 상황 정보</summary><p class="kc-collected-note">착장 판단에 사용하는 현재 기준값입니다. 신체 상태·제약의 상세 원문은 영어로 표시될 수 있습니다.</p><div class="kc-collected-people">'+people+'</div></details>';
+}
+
 export function createMessageOutfits(api){
  const chat=document.querySelector('#chat'),local=new Map();let observer,themeObserver,frame=null,scope='';
  const asset=name=>new URL('assets/'+name,api.base).href;
@@ -42,7 +59,9 @@ export function createMessageOutfits(api){
     return `<section class="kc-inline-person" id="${bodyId}-${who}" data-who="${who}" data-active="${view.tab===who}"><h4>${escape(names[who])}</h4>${content}</section>`;
    };
    const scene=saved?.state.sceneKo||{},summary=[scene.place,scene.activity].filter(v=>koreanDisplay(v)).join(' · ');
+   const collectedOpen=!!card.querySelector('.kc-collected')?.open;
    card.innerHTML=`<span class="kc-inline-tape" aria-hidden="true"></span><button type="button" class="kc-inline-toggle" aria-expanded="${!view.folded}" aria-controls="${bodyId}"><img src="${asset(view.folded?'kikki-closed.webp':'kikki-open.webp')}" alt="끼끼"><span>착장정보</span><span class="kc-inline-chevron" aria-hidden="true">${view.folded?'⌄':'⌃'}</span></button><div class="kc-inline-body" id="${bodyId}" ${view.folded?'hidden':''}>${saved?`<div class="kc-inline-tabs" role="tablist" aria-label="착장 인물">${PEOPLE.map(who=>`<button type="button" id="${bodyId}-tab-${who}" role="tab" aria-selected="${view.tab===who}" aria-controls="${bodyId}-${who}" data-who="${who}">${escape(names[who])}</button>`).join('')}</div><div class="kc-inline-people">${PEOPLE.map(personHtml).join('')}</div>${summary?`<footer>${escape(summary)}</footer>`:''}`:`<p class="kc-inline-empty" role="status">${pending?'착장을 확인하고 있어요.':'착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.'}</p>`}</div>`;
+   if(saved){card.querySelector('.kc-inline-body').insertAdjacentHTML('beforeend',collectedHtml(saved.state,names));card.querySelector('.kc-collected').open=collectedOpen;}
    function update(patch){
     if(scope!==currentScope)return;
     if(saved)api.saveView(entry.message,entry.prefix,patch);

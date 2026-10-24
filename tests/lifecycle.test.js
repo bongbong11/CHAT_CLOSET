@@ -1,3 +1,4 @@
+import {visibleMessages} from '../core.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {needsOutfitRead} from '../scene-gate.js';
@@ -26,4 +27,25 @@ test('주입은 현재 착장만 포함하며 내부 규칙·상태·설명은 �
  const state=emptyState();state.people.character.items=[{name:'dress shirt',color:'white',features:['cotton twill','spread collar'],brand:'UNIQLO'}];
  const value=outfitInjection(state);assert.equal(value,'Character: white dress shirt (UNIQLO).');assert.doesNotMatch(value,/cotton|collar|weather|profiles|Never|priority|conditions/);
  assert.equal(outfitInjection(emptyState()),'');assert.deepEqual(savedOutfitForMessages({base:state,checkpoints:{}},[]),state);
+});
+
+test('장식된 인포블록의 현재 장소를 읽고 긴 답변 끝의 인포도 보존한다',()=>{
+ const before=m(0,'<Scene_Info>📍 **Location:** Home</Scene_Info>');
+ const after=m(1,'<Scene_Info>📍 **Location:** Street</Scene_Info>');
+ assert.equal(needsOutfitRead([before,after],1),true);
+ const [long]=visibleMessages([{is_user:false,mes:'긴 본문'.repeat(4000)+'<Scene_Info>Location: Street</Scene_Info>'}]);
+ assert.match(long.content,/<Scene_Info>Location: Street/);assert.ok(long.content.length<12100);
+});
+
+test('현재 옷 보기는 이미 처리한 답변도 실제 판독 대상으로 보내고 이전 행동은 배경으로 분리한다',async()=>{
+ const s=new Store({getItem:()=>null,setItem(){},removeItem(){}});s.createCharacter('c','C');const bid=s.createBranch('c','B');s.bind('c',bid,'chat');
+ const messages=[m(0,'Earlier reply.'),{id:'u',role:'user',content:'Next'},m(1,'Current scene.'+info('14:00'))];let captured;
+ const e=new Engine(s,async(_system,data)=>{captured=data;return {changes:{}};});await e.read('c',bid,messages,{chatId:'chat'});await e.read('c',bid,messages,{chatId:'chat',force:true});
+ assert.equal(captured.reread,true);assert.deepEqual(captured.messages,[messages.at(-1)]);assert.deepEqual(captured.contextMessages,messages.slice(0,-1));
+});
+test('미해석 응답은 상태와 성공 체크포인트를 바꾸지 않고 중복 호출을 막는다',async()=>{
+ const s=new Store({getItem:()=>null,setItem(){},removeItem(){}});s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'chat');const before=structuredClone(b);let calls=0;
+ const e=new Engine(s,async()=>{calls++;return {sceneResult:true,outcome:'unusable',facts:{changes:{}},unresolved:['unclear']};}),messages=[m(1,'He leaves.')];
+ assert.equal(await e.read('c',bid,messages,{chatId:'chat'}),null);assert.deepEqual(b,before);
+ await e.read('c',bid,messages,{chatId:'chat'});assert.equal(calls,1);await e.read('c',bid,messages,{chatId:'chat',force:true});assert.equal(calls,2);
 });

@@ -1,3 +1,4 @@
+import {DiagnosticLog,parseJSON,sceneSummary} from '../core.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Store,Engine,KEY,emptyState,replaceTags,validateState,outfitText,visibleMessages,normalizeProfile} from '../core.js';
@@ -38,3 +39,59 @@ test('분석된 세계관과 복식 선택지를 보존한다',()=>{const p=norm
 test('모델 지시문과 구조 키는 영어이고 한국어 저장 형식을 왕복 변환',()=>{assert.doesNotMatch(ANALYSIS+SCENE,/[가-힣]/);const model=toModelData({character:{fields:{'직업':{value:'학생',certainty:'명시'}},wardrobe:[shoe]}});assert.ok(model.character.fields.occupation);assert.equal(model.character.wardrobe[0].category,'footwear');const stored=fromModelData(model);assert.equal(stored.character.fields['직업'].certainty,'명시');assert.equal(stored.character.wardrobe[0].category,'신발');});
 test('캐릭터 설명·성격 요약과 연결된 로어북 엔트리만 불러옴',async()=>{const context=()=>({characterId:0,characters:[{avatar:'a.png',data:{name:'A',description:'설명',personality:'성격',scenario:'제외',extensions:{world:'책'}}}],powerUserSettings:{}});const world={world_info:{charLore:[]},loadWorldInfo:async()=>({entries:{1:{comment:'사용',content:'내용'},2:{comment:'꺼짐',content:'제외',disable:true}}})};const h=createHost(context,{},world);const sheet=await h.sheet('character');assert.match(sheet.source,/DESCRIPTION:\n설명/);assert.match(sheet.source,/PERSONALITY:\n성격/);assert.doesNotMatch(sheet.source,/제외/);const lore=await h.lore('character');assert.deepEqual(lore.map(x=>x.title),['사용']);});
 test('깨진 JSON은 자동 교정하고 영문 파싱 위치 오류를 노출하지 않음',async()=>{let calls=0;const service={getProfile:()=>({}),validateProfile:()=>{},sendRequest:async()=>({content:++calls===1?'{"ok": true':'{"ok":true}'})};const h=createHost(()=>({}),service,{});assert.deepEqual(await h.request('p','Return JSON.',{},new AbortController().signal,'test'),{ok:true});assert.equal(calls,2);const bad={...service,sendRequest:async()=>({content:'{"bad":'})};const broken=createHost(()=>({}),bad,{});await assert.rejects(()=>broken.request('p','Return JSON.',{},new AbortController().signal,'test'),error=>/두 번 연속/.test(error.message)&&!/position|column|Expected/.test(error.message));});
+
+test('장면 표기 차이와 로컬에서 읽는 텍스트는 모델을 재호출하지 않는다',async()=>{
+ for(const content of ['{"Changes":{"CHAR":{"Context":{"LOCATION":"Home.","PHASE":"rest"},"Actions":null}},"sceneKo":{"place":"Main room"}}','Character:\nLocation: home\nPhase: resting']){
+  let calls=0;const service={getProfile:()=>({model:'fixture'}),validateProfile(){},async sendRequest(){calls++;return {content};}};
+  const result=await createHost(()=>({}),service,{}).request('p','Scene',{},new AbortController().signal,'scene');
+  assert.equal(calls,1);assert.equal(result.facts.changes.character.context.location,'home');assert.notEqual(result.outcome,'unusable');
+ }
+});
+test('문장 응답은 의미를 복구하고 실패한 복구는 두 번째 호출에서 끝난다',async()=>{
+ for(const recovered of ['{"changes":{"character":{"context":{"location":"outside","phase":"outdoors"}}}}','I cannot determine the scene.']){
+  let calls=0;const service={getProfile:()=>({}),validateProfile(){},async sendRequest(){return {content:++calls===1?'Alex has left the house.':recovered};}};
+  const result=await createHost(()=>({}),service,{}).request('p','Scene',{people:{character:{name:'Alex'}}},new AbortController().signal,'scene');
+  assert.equal(calls,2);assert.equal(result.outcome,recovered.startsWith('{')?'applied':'unusable');
+ }
+});
+test('JSON 포장의 마침표·중괄호와 trailing comma는 문자열 내용까지 바꾸지 않는다',()=>{
+ const payload=JSON.stringify({note:'a,} b { c "quoted"',changes:{}}).replace(/}$/,',}');
+ const value=parseJSON('Here is the result: '+payload+' Done.');
+ assert.equal(value.note,'a,} b { c "quoted"');assert.deepEqual(value.changes,{});
+});
+
+test('진단 로그는 원문·원인·순서를 복사하고 비밀값과 저장 데이터는 분리한다',()=>{
+ const events=[],logger=new DiagnosticLog({console:{groupCollapsed(){},info:v=>events.push(v),warn(){},error(){},groupEnd(){}}});
+ const task=logger.start('scene',{chat:'a',apiKey:'secret'});task.event('response','응답 수신',{raw:'He is barefoot.',headers:{Authorization:'Bearer secret'},usage:{output_tokens:25}});
+ const error=Error('failed',{cause:Error('root cause')});task.fail(error,'decision');logger.error(error);
+ const copied=JSON.parse(logger.copy());assert.equal(copied.records.length,1);assert.equal(copied.records[0].events[1].data.raw,'He is barefoot.');assert.match(logger.copy(),/root cause/);assert.doesNotMatch(logger.copy(),/Bearer secret|"apiKey": "secret"/);assert.equal(events.length,2);
+ logger.clear();assert.equal(logger.list().length,0);
+});
+test('진단 로그는 개수·용량 제한을 지키고 잘림을 명시한다',()=>{
+ const logs=new DiagnosticLog({limit:3,bytes:4096,console:null});
+ for(let i=0;i<8;i++)logs.start('test',{n:i}).finish('completed','done');
+ assert.equal(logs.list().length,3);
+ const task=logs.start('scene');task.event('response','수신',{raw:'A'.repeat(30000)});task.finish('completed','done');
+ assert.ok(new TextEncoder().encode(JSON.stringify(logs.records)).length<=4096);assert.equal(logs.list()[0].truncated,true);
+});
+
+test('Vertex 404는 응답 형식 복구로 재시도하지 않고 실제 연결 오류와 원인을 남긴다',async()=>{
+ let calls=0;const root=Error('Google Vertex AI API returned error: 404 Not Found JSON publisher gemini-4-argon was not found or project has no access');
+ const service={getProfile:()=>({}),validateProfile(){},sendRequest:async()=>{calls++;throw Error('API request failed',{cause:root});}};
+ const logs=new DiagnosticLog({console:null}),host=createHost(()=>({}),service,{},{logs});
+ await assert.rejects(host.request('p','Scene',{},new AbortController().signal,'scene'),e=>e.kind==='connection'&&e.status===404&&e.cause.cause===root);
+ assert.equal(calls,1);assert.match(logs.copy(),/gemini-4-argon/);assert.match(logs.copy(),/모델 연결 실패/);
+});
+
+test('JSON 파싱 위치 404는 HTTP 404와 혼동하지 않는다',async()=>{
+ let calls=0;const service={getProfile:()=>({}),validateProfile(){},async sendRequest(){if(++calls===1)throw new SyntaxError('Unexpected JSON at position 404');return {content:'{"ok":true}'};}};
+ assert.deepEqual(await createHost(()=>({}),service,{}).request('p','JSON',{},new AbortController().signal,'test'),{ok:true});assert.equal(calls,2);
+});
+
+test('정상 changes 빈 응답과 Vertex 응답 포장은 형식 오류 없이 해석하고 수집된 상황을 표시한다',async()=>{
+ let calls=0;const service={getProfile:()=>({}),validateProfile(){},async sendRequest(){calls++;return {candidates:[{content:{role:'model',parts:[{text:'{"changes":{}}',thoughtSignature:'do not collect'}]}}]};}};
+ const result=await createHost(()=>({}),service,{}).request('p','Scene',{},new AbortController().signal,'scene');
+ assert.equal(calls,1);assert.equal(result.outcome,'unchanged');assert.deepEqual(result.facts,{changes:{}});
+ const summary=sceneSummary({people:{character:{context:{location:'home',phase:'resting',temperature:16,weather:'mild'}}},sceneKo:{}});
+ assert.equal(summary.place,'집');assert.equal(summary.activity,'휴식');assert.equal(summary.weather,'온화 · 16℃');
+});

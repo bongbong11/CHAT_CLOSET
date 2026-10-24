@@ -3,14 +3,13 @@ const fields={ageRange:'나이대',occupation:'직업',standardOfLiving:'생활�
 const categories={top:'상의',bottom:'하의',underwear:'속옷',footwear:'신발',outerwear:'겉옷',accessory:'소품'};
 const certainty={explicit:'명시',inferred:'추정',unknown:'불명'};
 const source={assumedOwned:'추정 보유',alreadyOwned:'기존 보유',purchased:'구매',borrowedOrIssued:'대여·지급'};
-const levels={low:'적게',medium:'보통',high:'많이'};
 const reverse=map=>Object.fromEntries(Object.entries(map).map(([a,b])=>[b,a]));
-const outbound={fields:reverse(fields),category:reverse(categories),certainty:reverse(certainty),source:reverse(source),newItems:reverse(levels),variety:reverse(levels)};
+const outbound={fields:reverse(fields),category:reverse(categories),certainty:reverse(certainty),source:reverse(source)};
 const inbound={fields,category:categories,certainty,source};
 function convert(value,maps){
  if(Array.isArray(value))return value.map(v=>convert(v,maps));
  if(!value||typeof value!=='object')return value;
- return Object.fromEntries(Object.entries(value).filter(([key])=>maps!==outbound||!['labelKo','brandKo','sceneKo'].includes(key)).map(([key,v])=>{
+ return Object.fromEntries(Object.entries(value).filter(([key])=>maps!==outbound||!['labelKo','brandKo','sceneKo','wearingKo','display'].includes(key)).map(([key,v])=>{
   if(key==='fields'&&v&&typeof v==='object'&&!Array.isArray(v))return [key,Object.fromEntries(Object.entries(v).map(([name,field])=>[maps.fields[name]||name,convert(field,maps)]))];
   if(typeof v==='string'&&maps[key])return [key,maps[key][v]||v];
   return [key,convert(v,maps)];
@@ -18,3 +17,8 @@ function convert(value,maps){
 }
 export const toModelData=value=>convert(value,outbound);
 export const fromModelData=value=>convert(value,inbound);
+
+export function requireEnglishProfile(profile){
+ const values=[...Object.values(profile?.fields||{}).flatMap(field=>[field?.value,field?.evidence]),...Object.values(profile?.wardrobeHints||{}).flat(),...Object.values(profile?.wardrobeExceptions||{})];
+ if(values.some(value=>typeof value==='string'&&/[가-힣]/.test(value)))throw Error('분석 원문은 영어여야 합니다. 기존 취향은 유지됩니다. 다시 분석해 주세요.');
+}

@@ -36,16 +36,15 @@ test('부분 탈의와 완전 탈의 뒤에도 처음 벗기 전 착장을 인�
  assert.deepEqual(memory.character.beforeUndress,['shirt','pants','shoe']);assert.deepEqual(memory.persona.beforeUndress,[]);
  const dress=emptyState();dress.people.persona.items=[garment('dress','상의','midi dress')];assert.equal(memoryFromStates([dress]).persona.lastDressed[0],'dress');
 });
-test('탈의 뒤 장소 이동은 판독 모델에 직전 착장을 보내고 스와이프는 해당 복원 정보로 되돌림',async()=>{
+test('탈의 뒤 재착용은 코드가 기억에서 복구하고 판독 모델에 옷장/기억을 보내지 않는다',async()=>{
  const s=new Store({getItem:()=>null,setItem(){},removeItem(){}});s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);b.profiles.character={wardrobe:[shirt,pants,shoe]};b.base=outfit();b.current=outfit();b.baseMemory=memoryFromStates([b.base]);let received;
- const e=new Engine(s,async(_system,data)=>{received=data;const undress=data.messages.at(-1)?.content==='옷을 벗었다.';return {scene:{place:undress?'Bedroom':'Lobby'},people:{character:{nude:undress,items:undress?[]:data.outfitMemory.character.beforeUndress},persona:{nude:false,items:[]}},newItems:{}};});
- const messages=[m(0,'옷을 벗었다.')];await e.read('c',bid,messages,{gate:true});assert.equal(b.current.people.character.nude,true);messages.push(m(1,'둘은 로비로 내려갔다.'));await e.read('c',bid,messages,{gate:true});assert.deepEqual(received.outfitMemory.character.beforeUndress,['shirt','pants','shoe']);assert.equal(b.current.people.character.nude,false);
+ const e=new Engine(s,async(_system,data)=>{received=data;const undress=data.messages.at(-1)?.content==='옷을 벗었다.';return {changes:{character:undress?{actions:[{op:'nude'}]}:{context:{location:'outside',space:'public',phase:'outdoors'}}}};},async()=>({newItems:{character:[{id:'briefs',name:'briefs',category:'속옷',brand:'UNIQLO',labelKo:'검정 팬티',brandKo:'유니클로'}]}}));
+ const messages=[m(0,'옷을 벗었다.')];await e.read('c',bid,messages,{gate:true});assert.equal(b.current.people.character.nude,true);messages.push(m(1,'둘은 로비로 내려갔다.'));await e.read('c',bid,messages,{gate:true});assert.equal(received.outfitMemory,undefined);assert.equal(received.wardrobes,undefined);assert.equal(b.current.people.character.nude,false);assert.ok(b.current.people.character.items.some(i=>i.id==='shirt'));
  messages[1]=m(1,'그는 미소 지었다.',1);await e.read('c',bid,messages,{gate:true});assert.equal(b.current.people.character.nude,true);assert.deepEqual(b.outfitMemory.character.beforeUndress,['shirt','pants','shoe']);
- s.resetChat('c','chat'); // no binding: use an explicit branch reset below.
  s.bind('c',bid,'chat');s.resetChat('c','chat');assert.deepEqual(b.outfitMemory.character.beforeUndress,[]);
 });
-test('주입은 이야기 우선과 서술 강제 금지를 명시하고 확장 모델만 생략된 재착용을 추론',()=>{
- const prompt=outfitInjection(outfit());assert.match(prompt,/current story input\/output take priority/);assert.match(prompt,/Never invent actions or reasons/);assert.match(SCENE,/BOTH user input and roleplay output/);assert.match(SCENE,/ordinary redressing/);assert.match(SCENE,/not an instruction to narrate redressing/);assert.match(ANALYSIS,/wardrobeTargets/);assert.doesNotMatch(ANALYSIS,/wardrobeSize/);assert.match(WARDROBE_FILL,/missingByCategory/);
+test('확장 판독만 이야기 우선 규칙을 받고 롤플 주입은 옷만 사용한다',()=>{
+ assert.match(SCENE,/BOTH user input and roleplay output/);assert.match(SCENE,/Do not infer dressing actions/);assert.match(ANALYSIS,/wardrobeTargets/);assert.doesNotMatch(ANALYSIS,/wardrobeSize/);assert.match(WARDROBE_FILL,/missingByCategory/);
 });
 
 test('하나의 기본 옷장 구성으로 기존 카테고리별 수량 기준을 적용',()=>{
@@ -71,10 +70,10 @@ test('생성한 영어 의상과 한글 표시명은 같이 저장하고 모든 
  assert.equal(fromModelData({wardrobe:[g]}).wardrobe[0].labelKo,g.labelKo);assert.throws(()=>requireKoreanLabels([{...g,labelKo:''}]),/한글 표시명/);
  const merged=mergeWardrobe([{...g,labelKo:''}],[{...g,name:'changed canonical name'}]);assert.equal(merged[0].name,'Oxford shirt');assert.equal(merged[0].labelKo,g.labelKo);
 });
-test('일반 판독의 기존 표시명 보완은 영어 의상·기존 한글 표시명을 바꾸지 않음',()=>{
- const g=garment('g','상의','Oxford shirt');const raw={people:{character:{nude:false,items:['g']},persona:{nude:false,items:[]}},labelUpdates:{character:[{id:'g',labelKo:'남색 옥스퍼드 셔츠',brandKo:'유니클로'}]},newItems:{}};
- const result=validateState(raw,{character:[g],persona:[]});assert.equal(result.state.people.character.items[0].name,'Oxford shirt');assert.equal(result.state.people.character.items[0].labelKo,'남색 옥스퍼드 셔츠');assert.equal(result.added.character[0].id,'g');
- const existing={...g,labelKo:'기존 셔츠'};assert.equal(validateState(raw,{character:[existing],persona:[]}).state.people.character.items[0].labelKo,'기존 셔츠');
+test('표시명 보완은 기존 의상의 영어 원본과 유효한 한글 표시를 바꾸지 않는다',()=>{
+ const g=garment('g','상의','Oxford shirt'),updates=[{id:'g',name:'different shirt',brand:'Other',labelKo:'남색 셔츠',brandKo:'유니클로'}];
+ const completed=completeLabels([g],updates)[0];assert.equal(completed.name,g.name);assert.equal(completed.brand,g.brand);assert.equal(completed.labelKo,'남색 셔츠');
+ const existing={...g,labelKo:'기존 셔츠'};assert.equal(completeLabels([existing],updates)[0].labelKo,'기존 셔츠');
 });
 test('의상 UI는 저장된 한글 표시만 사용하고 구버전 영어 원문을 화면에 노출하지 않음',()=>{
  const garment={category:'상의',name:'Oxford shirt',brand:'UNIQLO'};assert.equal(itemUiLabel(garment),'상의 · 표시명 준비 전');assert.equal(itemUiBrand(garment),'브랜드 표시 준비 전');assert.equal(itemUiLabel({...garment,labelKo:'남색 셔츠'}),'남색 셔츠');assert.equal(itemUiBrand({...garment,brandKo:'유니클로'}),'유니클로');assert.equal(itemUiLabel({...garment,labelKo:'navy 셔츠'}),'상의 · 표시명 준비 전');

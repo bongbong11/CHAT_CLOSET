@@ -114,7 +114,7 @@ export class ServerStorage {
  }
  start(){
   if(this.job)return;
-  this.job=Promise.resolve().then(()=>this.drain()).catch(error=>{this.error=error;this.notify(error.message);}).finally(()=>{this.job=null;});
+  this.job=Promise.resolve().then(()=>this.drain()).catch(error=>{this.error=error;this.notify(error.message);}).finally(()=>{this.job=null;if(!this.error&&this.pending!==undefined)this.start();});
  }
  async drain(){
   while(this.pending!==undefined){
@@ -148,7 +148,7 @@ export class ServerStorage {
   }
   this.notify('서버 저장됨');
  }
- async flush(){if(this.job)await this.job;if(this.error)throw this.error;}
+ async flush(){while(this.job)await this.job;if(this.error)throw this.error;}
  async pull(){
   await this.flush();if(!this.ready)throw Error('서버 저장소에 연결되지 않았습니다.');
   const record=await this.fetchRemote();

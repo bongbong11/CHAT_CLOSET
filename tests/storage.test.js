@@ -115,7 +115,7 @@ test('정리 중 파일 삭제 실패는 삭제 대기 정보를 남기고 재�
 test('보관 한도 초과 기록과 만료 번역만 정리하며 옷장·착장·복원 정보와 유효 번역은 보존',()=>{
  const p=new Store(memory());p.createCharacter('c','C');const bid=p.createBranch('c','Story'),b=p.branch('c',bid);b.profiles.character={fields:{style:{value:'Quiet'}},wardrobe:[{id:'worn',name:'shirt'}]};b.current.people.character.items=[{id:'worn'}];b.extra.character=[{id:'owned-but-unworn'}];b.outfitMemory={character:{lastDressed:['worn'],beforeUndress:['worn']}};
  b.reportTranslations={character:{signature:hash(JSON.stringify(b.profiles.character.fields)),fields:{style:{value:'차분함'}}},persona:{signature:'stale',fields:{}}};b.history=Array.from({length:8},(_,i)=>({scene:i}));b.outfits=Array.from({length:12},(_,i)=>String(i));b.checkpoints=Object.fromEntries(Array.from({length:83},(_,i)=>['snapshot-'+i,{state:i}]));
- const before=structuredClone(p.data),result=compactStoredData(p.data),next=result.data.characters.c.branches[bid];assert.deepEqual(p.data,before);assert.deepEqual(result.removed,{translations:1,history:3,outfits:2,checkpoints:3});assert.deepEqual(next.profiles,b.profiles);assert.deepEqual(next.current,b.current);assert.deepEqual(next.extra,b.extra);assert.deepEqual(next.outfitMemory,b.outfitMemory);assert.deepEqual(next.reportTranslations.character,b.reportTranslations.character);assert.equal(next.reportTranslations.persona,undefined);assert.deepEqual(next.history,b.history.slice(-5));assert.equal(Object.keys(next.checkpoints).length,80);assert.equal(compactStoredData(result.data).total,0);
+ const before=structuredClone(p.data),result=compactStoredData(p.data),next=result.data.characters.c.branches[bid];assert.deepEqual(p.data,before);assert.deepEqual(result.removed,{translations:1,history:3,outfits:2,checkpoints:3,display:0});assert.deepEqual(next.profiles,b.profiles);assert.deepEqual(next.current,b.current);assert.deepEqual(next.extra,b.extra);assert.deepEqual(next.outfitMemory,b.outfitMemory);assert.deepEqual(next.reportTranslations.character,b.reportTranslations.character);assert.equal(next.reportTranslations.persona,undefined);assert.deepEqual(next.history,b.history.slice(-5));assert.equal(Object.keys(next.checkpoints).length,80);assert.equal(compactStoredData(result.data).total,0);
 });
 test('수동 채팅 정리는 내부 태그만 제거하고 사용자 원문·일반 서식·스와이프를 보존',async()=>{
  const c={chat:[{is_user:true,mes:'<kikki_outfit>user example</kikki_outfit>'},{is_user:false,mes:'Normal ```text\n```'},{is_user:false,mes:'Story<kikki_outfit>hidden</kikki_outfit>',swipes:['Another story','Second<kikki_outfit>hidden</kikki_outfit>']}],saveChat:async()=>{}};
@@ -124,4 +124,13 @@ test('수동 채팅 정리는 내부 태그만 제거하고 사용자 원문·�
 test('채팅 정리 저장 실패는 성공으로 표시하지 않고 편집 전 메시지·스와이프로 복구',async()=>{
  const c={chat:[{is_user:false,mes:'Story<kikki_outfit>hidden</kikki_outfit>',swipes:['Alt<kikki_outfit>hidden</kikki_outfit>']}],saveChat:async()=>{throw Error('save failed');}},before=structuredClone(c.chat);
  await assert.rejects(sanitizeSavedOutputs(()=>c,{report:true,onlyInternal:true}),/save failed/);assert.deepEqual(c.chat,before);
+});
+
+
+test('저장 완료 직전에 들어온 후속 변경도 flush가 끝나기 전에 서버에 기록한다',async()=>{
+ const s=server(),pc=await s.client(),p=new Store(pc);let changed=false;
+ pc.onStatus=status=>{if(status==='서버 저장됨'&&!changed){changed=true;p.createCharacter('followup','Late change');}};
+ p.createCharacter('first','First');await pc.flush();
+ assert.equal(s.data().characters.followup.name,'Late change');assert.equal(pc.pending,undefined);assert.equal(pc.job,null);
+ assert.equal(s.record.transaction,undefined);assert.equal(s.files.size,3);
 });

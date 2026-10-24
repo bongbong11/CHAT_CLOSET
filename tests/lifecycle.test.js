@@ -15,15 +15,15 @@ test('같은 장소의 환복·출발·장소·큰 시간 변화는 판독',()=>
 });
 test('변화 없는 메시지를 저장하고 중복 이벤트는 모델 호출하지 않음',async()=>{
  const s=new Store({getItem:()=>null,setItem(){},removeItem(){}});s.createCharacter('c','C');const bid=s.createBranch('c','B');s.bind('c',bid,'chat');let count=0,notices=0;
- const engine=new Engine(s,async()=>{count++;return {scene:{place:'Home'},people:{character:{nude:true,items:[]},persona:{nude:false,items:[]}},newItems:{}};});
+ const engine=new Engine(s,async()=>{count++;return {scene:{place:'Home'},changes:{character:{actions:[{op:'nude'}]}}};});
  const messages=[m(0,'At home.')],options={gate:true,onRequest:()=>notices++};await engine.read('c',bid,messages,options);
  messages.push(m(1,'He smiles and answers.'));await engine.read('c',bid,messages,options);await engine.read('c',bid,messages,options);
  assert.equal(count,1);assert.equal(notices,1);assert.equal(s.branch('c',bid).keys.length,2);
  messages[1].content='He puts on a shirt.';await engine.read('c',bid,messages,options);assert.equal(count,2);
  messages[1].content='He smiles and answers.';await engine.read('c',bid,messages,options);assert.equal(count,2);
 });
-test('주입은 짧은 착장과 강한 복사 금지 지시만 포함',()=>{
+test('주입은 현재 착장만 포함하며 내부 규칙·상태·설명은 넣지 않는다',()=>{
  const state=emptyState();state.people.character.items=[{name:'dress shirt',color:'white',features:['cotton twill','spread collar'],brand:'UNIQLO'}];
- const value=outfitInjection(state);assert.match(value,/NEVER reproduce/);assert.match(value,/NEVER add a clothing section/);assert.match(value,/Character: white dress shirt \(UNIQLO\)/);assert.doesNotMatch(value,/cotton|collar|weather|profiles/);
+ const value=outfitInjection(state);assert.equal(value,'Character: white dress shirt (UNIQLO).');assert.doesNotMatch(value,/cotton|collar|weather|profiles|Never|priority|conditions/);
  assert.equal(outfitInjection(emptyState()),'');assert.deepEqual(savedOutfitForMessages({base:state,checkpoints:{}},[]),state);
 });

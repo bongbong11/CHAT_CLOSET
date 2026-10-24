@@ -7,7 +7,7 @@ export function createHost(context,service,worldInfo){
  const identity=()=>{
   const c=context(),ch=c.characters?.[c.characterId];
   if(!ch||c.groupId)return null;
-  return {id:String(ch.avatar||c.characterId),name:ch.name||c.name2,chat:String(c.chatId||''),persona:String(c.powerUserSettings?.persona_description||''),personaKey:hash(String(c.powerUserSettings?.persona_description||'')+c.name1)};
+  return {id:String(ch.avatar||c.characterId),name:ch.name||c.name2,userName:c.name1||'페르소나',chat:String(c.chatId||''),persona:String(c.powerUserSettings?.persona_description||''),personaKey:hash(String(c.powerUserSettings?.persona_description||'')+c.name1)};
  };
  const linkedCharacterBooks=()=>{
   const c=context(),ch=c.characters?.[c.characterId];
@@ -58,7 +58,7 @@ export function createHost(context,service,worldInfo){
   const profile=service.getProfile(profileId);service.validateProfile(profile);
   const ctl=new AbortController(),cancel=()=>ctl.abort();signal?.addEventListener('abort',cancel,{once:true});let timer;
   try{
-   const work=service.sendRequest(profileId,messages,maxTokens,{signal:ctl.signal,stream:false,extractData:true,includePreset:false,includeInstruct:true});
+   const work=service.sendRequest(profileId,messages,maxTokens,{signal:ctl.signal,stream:false,extractData:true,includePreset:false,includeInstruct:false});
    const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{ctl.abort();reject(Error('연결 모델 응답 시간이 초과되었습니다.'));},90000);ctl.signal.addEventListener('abort',()=>reject(abortError()),{once:true});});
    return await Promise.race([work,timeout]);
   }finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
@@ -66,7 +66,7 @@ export function createHost(context,service,worldInfo){
  async function request(profileId,system,data,signal,task='scene'){
   if(!profileId)throw Error('설정에서 연결 프로필을 선택하세요.');
   const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(toModelData(data))}];
-  const maxTokens=task==='analysis'||task==='translation'?12000:task==='test'?300:6000;
+  const maxTokens=task==='analysis'||task==='translation'?12000:task==='test'?300:task==='items'?4500:1400;
   let first;
   try{first=await send(profileId,messages,maxTokens,signal);}
   catch(error){
@@ -88,4 +88,29 @@ export function createHost(context,service,worldInfo){
 }
 
 // Operate on the outgoing request only: never rewrite stored chat messages or templates.
-export function injectPayload(payload,content,enabled=true){let found=0,malformed=false;const visit=(node)=>{if(typeof node==='string'){const r=replaceTags(node,content,{keep:enabled&&!!content&&found===0});found+=r.found;malformed ||=r.malformed;return r.text;}if(Array.isArray(node))return node.map(visit);if(node&&typeof node==='object'){for(const key of ['prompt','messages','content','text'])if(Object.hasOwn(node,key))node[key]=visit(node[key]);}return node;};visit(payload);return {found,malformed};}
+export function injectPayload(payload,content,enabled=true){
+ let found=0,malformed=false;
+ const visit=node=>{
+  if(typeof node==='string'){
+   const marked=node.replace(/{{\s*kikki_outfit\s*}}/gi,'<kikki_outfit></kikki_outfit>');
+   const result=replaceTags(marked,content,{keep:enabled&&!!content&&found===0});
+   found+=result.found;malformed ||=result.malformed;return result.text;
+  }
+  if(Array.isArray(node))return node.map(visit);
+  if(node&&typeof node==='object')for(const key of ['prompt','messages','content','text'])if(Object.hasOwn(node,key))node[key]=visit(node[key]);
+  return node;
+ };
+ visit(payload);return {found,malformed};
+}
+
+export async function registerOutfitMacro(context,content,load=()=>import('/scripts/macros/macro-system.js')){
+ // Preserve the slot even when naked: outgoing may need the clothed pre-swipe state.
+ const handler=()=>{const value=content();return value==null?'':`<kikki_outfit>\n${value}\n</kikki_outfit>`;};
+ const c=context();
+ // Register in the engine actually used by ST, not only in an inactive new registry.
+ if(c.powerUserSettings?.experimental_macro_engine){
+  try{const {macros}=await load();if(macros?.register){macros.register('kikki_outfit',{description:'Current worn clothing from Kikki’s Closet.',handler});return true;}}catch{}
+ }
+ if(typeof c.registerMacro==='function'){c.registerMacro('kikki_outfit',handler,'Current worn clothing from Kikki’s Closet.');return true;}
+ return false;
+}

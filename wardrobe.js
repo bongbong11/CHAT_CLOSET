@@ -1,5 +1,34 @@
 export const MAIN_WARDROBE={top:{label:'상의',category:'상의',counts:[4,7,10]},bottom:{label:'하의',category:'하의',counts:[3,5,7]},outerwear:{label:'겉옷',category:'겉옷',counts:[1,3,5]},footwear:{label:'신발',category:'신발',counts:[2,3,5]}};
 export const WARDROBE_TABS=[...Object.entries(MAIN_WARDROBE).map(([id,v])=>({id,...v})),{id:'underwear',label:'속옷',category:'속옷'},{id:'accessory',label:'액세서리·소품',category:'소품'}];
+export function normalizeTraits(value={}){
+ const result={};
+ for(const [key,allowed] of Object.entries({use:['casual','work','formal','home','care'],climate:['hot','mild','cold','rain'],fit:['loose','adjustable','maternity','front_opening','flat','easy_on']})){
+  const values=Array.isArray(value[key])?value[key]:[];result[key]=[...new Set(values.filter(v=>allowed.includes(v)))];
+ }
+ if(['upper','lower','full','feet','support'].includes(value.coverage))result.coverage=value.coverage;
+ if(typeof value.temporary==='boolean')result.temporary=value.temporary;
+ return result;
+}
+export function itemTraits(item){
+ const traits=normalizeTraits(item.traits),description=[item.name,...(item.features||[])].join(' ').toLowerCase();
+ const add=(key,value)=>{if(!traits[key].includes(value))traits[key].push(value);};
+ if(/\b(?:hospital|patient|surgical)\s+(?:gown|robe)|\bbath(?:ing)?\s+(?:towel|robe)|\btowel\b/.test(description))traits.temporary??=true;
+ if(!traits.coverage)traits.coverage=/\b(?:dress(?!\s+shirt)|gown|jumpsuit|romper|robe)\b/i.test(item.name||'')?'full':({'상의':'upper','하의':'lower','신발':'feet'}[item.category]||'support');
+ if(/\b(?:loose|relaxed|oversized|roomy)\b/.test(description))add('fit','loose');
+ if(/\b(?:elastic|adjustable|drawstring)\b/.test(description))add('fit','adjustable');
+ if(/\bmaternity\b/.test(description))add('fit','maternity');
+ if(/\b(?:front.opening|button.front|zip.front|button.down)\b/.test(description))add('fit','front_opening');
+ if(/\b(?:flat|sneakers|loafers|slippers)\b/.test(description))add('fit','flat');
+ if(/\b(?:slip.on|easy.on|velcro)\b/.test(description))add('fit','easy_on');
+ if(/\b(?:puffer|winter|insulated|thermal|wool coat|overcoat)\b/.test(description))add('climate','cold');
+ if(/\b(?:raincoat|rain jacket|waterproof|rain boots)\b/.test(description))add('climate','rain');
+ if(/\b(?:summer|shorts|sleeveless|linen)\b/.test(description))add('climate','hot');
+ if(/\b(?:suit|tuxedo|evening|formal|dress shirt|tailored)\b/.test(description))add('use','formal');
+ if(/\b(?:t.shirt|jeans|hoodie|sweatshirt|shorts)\b/.test(description))add('use','casual');
+ if(/\b(?:uniform|scrubs|workwear|work shirt)\b/.test(description))add('use','work');
+ if(traits.temporary&&/\b(?:hospital|patient|surgical)\b/.test(description))add('use','care');
+ return traits;
+}
 export function wardrobeLevels(settings={}){
  const legacy=settings.wardrobeSize<=10?'low':settings.wardrobeSize>=24?'high':'medium';
  return Object.fromEntries(Object.keys(MAIN_WARDROBE).map(key=>[key,['low','medium','high'].includes(settings.wardrobeLevel)?settings.wardrobeLevel:['low','medium','high'].includes(settings.wardrobeLevels?.[key])?settings.wardrobeLevels[key]:legacy]));
@@ -21,6 +50,7 @@ export function applyLabels(branch,who,completed){
  update(branch.profiles[who]?.wardrobe);update(branch.extra[who]);update(branch.baseExtra?.[who]);
  for(const state of [branch.current,branch.base,...(branch.history||[])])update(state?.people[who]?.items);
  for(const cp of Object.values(branch.checkpoints||{})){update(cp.extra?.[who]);update(cp.state?.people[who]?.items);for(const state of cp.history||[])update(state?.people[who]?.items);}
+ for(const snapshot of Object.values(branch.display?.snapshots||{}))update(snapshot.people?.[who]?.items);
 }
 const signature=item=>JSON.stringify([item.category,item.name?.trim().toLowerCase(),item.color?.trim().toLowerCase(),[...(item.features||[])].map(s=>s.trim().toLowerCase()).sort(),item.brand?.trim().toLowerCase()]);
 export function mergeWardrobe(existing,added){

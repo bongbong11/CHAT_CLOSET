@@ -89,3 +89,27 @@
 .kc-storage-file{overflow-wrap:anywhere;word-break:break-word}
 .kc-delete-options{display:grid;gap:8px}.kc-delete-options .kc-muted{margin:3px 0 0;line-height:1.5}.kc-cleanup-result{overflow-wrap:anywhere}
 @media(max-width:600px){.kc-dialog button.icon,.kc-bubble button.icon{font-size:20px;min-width:36px;min-height:36px;padding:4px 7px}.kc-dialog .kc-nav-tools{gap:4px}}
+/* Per-message clothing memo: outside .mes_text, so story copying and prompts stay clean. */
+.kc-inline-card{--ki-ink:var(--SmartThemeBodyColor,#34332f);--ki-paper:color-mix(in srgb,var(--SmartThemeQuoteColor,#ad9573) 5%,#fffdf8);--ki-line:color-mix(in srgb,var(--ki-ink) 18%,var(--ki-paper));--ki-muted:color-mix(in srgb,var(--ki-ink) 72%,var(--ki-paper));--ki-tab:color-mix(in srgb,var(--SmartThemeQuoteColor,#ad9573) 15%,var(--ki-paper));position:relative;container-type:inline-size;box-sizing:border-box;max-width:680px;margin:20px 0 9px;border:1px solid var(--ki-line);border-radius:3px 3px 9px 9px;background:var(--ki-paper);color:var(--ki-ink);box-shadow:0 4px 12px #0000000b;font-size:12px;text-align:left;line-height:1.5;isolation:isolate}
+.kc-inline-card.kc-inline-dark{--ki-paper:color-mix(in srgb,var(--SmartThemeQuoteColor,#ad9573) 5%,#2d2e32)}
+.kc-inline-tape{position:absolute;z-index:1;top:-9px;left:23px;width:62px;height:17px;pointer-events:none;background:color-mix(in srgb,var(--SmartThemeQuoteColor,#c9b899) 45%,var(--ki-paper));opacity:.85;transform:rotate(-5deg);clip-path:polygon(2% 0,98% 3%,100% 20%,97% 44%,100% 65%,97% 100%,0 98%,3% 73%,0 47%,3% 22%)}
+.kc-inline-card button{font:inherit;color:inherit;cursor:pointer;border:0;box-shadow:none;text-shadow:none;background:transparent;min-width:0;margin:0}
+.kc-inline-toggle{display:flex;align-items:center;gap:9px;width:100%;min-height:52px;padding:9px 14px!important;text-align:left;border-radius:4px}
+.kc-inline-toggle img{width:37px;height:37px;flex:0 0 auto;object-fit:contain}
+.kc-inline-toggle>span:first-of-type{font-weight:500;font-size:13px}
+.kc-inline-chevron{margin-left:auto;color:var(--ki-muted);font-size:17px;padding:0 2px}
+.kc-inline-body{padding:0 15px 11px}.kc-inline-body[hidden]{display:none!important}
+.kc-inline-tabs{display:none;gap:3px;border-bottom:1px solid var(--ki-line);margin-bottom:6px}
+.kc-inline-tabs button{position:relative;padding:5px 11px;min-height:31px;font-size:11px;color:var(--ki-muted);border-radius:5px 5px 0 0}
+.kc-inline-tabs button[aria-selected=true]{background:var(--ki-tab);color:var(--ki-ink);box-shadow:inset 0 -2px var(--ki-muted)}
+.kc-inline-people{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+.kc-inline-person{min-width:0}.kc-inline-person+.kc-inline-person{border-left:1px solid var(--ki-line);padding-left:18px}
+.kc-inline-person h4{margin:0;padding:4px 0 7px;font-size:12px;font-weight:500;color:inherit}
+.kc-inline-person h4,.kc-inline-tabs button{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
+.kc-inline-person dl{margin:0;padding:0}.kc-inline-row{display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:5px 0;border-top:1px solid var(--ki-line);align-items:baseline}
+.kc-inline-row dt{font-size:11px;font-weight:400;color:var(--ki-muted);margin:0}.kc-inline-row dd{min-width:0;margin:0;overflow-wrap:anywhere;word-break:keep-all}
+.kc-inline-item{display:block}.kc-inline-item+.kc-inline-item{margin-top:3px}.kc-inline-item small,.kc-inline-item em{font-size:11px;color:var(--ki-muted);margin-left:5px;font-style:normal}
+.kc-inline-body footer{border-top:1px solid var(--ki-line);padding-top:7px;margin-top:2px;font-size:11px;color:var(--ki-muted)}
+.kc-inline-empty{margin:3px 0 6px;font-size:11px;color:var(--ki-muted)}
+@container(max-width:420px){.kc-inline-people{display:block}.kc-inline-tabs{display:flex;flex-wrap:wrap}.kc-inline-person h4{display:none}.kc-inline-person+.kc-inline-person{border:0;padding:0}.kc-inline-person[data-active=false]{display:none}.kc-inline-toggle{padding:8px 11px!important;gap:7px}.kc-inline-toggle img{width:33px;height:33px}.kc-inline-body{padding:0 12px 10px}.kc-inline-row{padding:4px 0;font-size:11px;grid-template-columns:28px minmax(0,1fr)}}
+@media(pointer:coarse){.kc-inline-tabs button:after{content:'';position:absolute;inset:-5px 0}.kc-inline-tabs{margin-top:5px;margin-bottom:10px}}

@@ -72,8 +72,12 @@ await readNow();assert.equal(await page.evaluate(()=>JSON.parse(calls.at(-1).mes
 const mobileButtonSize=await page.locator('[data-action="edit"]').evaluate(n=>getComputedStyle(n).fontSize);
 await page.setViewportSize({width:1000,height:900});assert.equal(await page.locator('.kc-item').first().evaluate(n=>getComputedStyle(n).fontSize),'13px');await page.screenshot({path:path.join(root,'test-results/desktop-outfit.png'),fullPage:true});
 await page.setViewportSize({width:360,height:780});assert.equal(await page.locator('.kc-item').first().evaluate(n=>getComputedStyle(n).fontSize),'10px');assert.equal(await page.locator('[data-action="edit"]').evaluate(n=>getComputedStyle(n).fontSize),mobileButtonSize);
-await page.evaluate(async()=>{TEST_CONTEXT.chat.push({send_date:'2',is_user:false,swipe_id:0,mes:'신발을 신고 밖으로 나갔다.'});await TEST_CONTEXT.eventSource.emit('MESSAGE_RECEIVED',2)});await page.waitForTimeout(500);await page.evaluate(async()=>{TEST_CONTEXT.chat[2].swipe_id=1;TEST_CONTEXT.chat[2].mes='맨발로 밖으로 나갔다.';await TEST_CONTEXT.eventSource.emit('MESSAGE_SWIPED',2)});await page.waitForTimeout(500);assert.equal(await page.locator('.kc-person').first().locator('dd').filter({hasText:'흰색 운동화'}).count(),0);
-await page.evaluate(async()=>{TEST_CONTEXT.chat[2].is_system=true;await TEST_CONTEXT.eventSource.emit('MESSAGE_UPDATED',2)});await page.waitForTimeout(500);assert.ok(await page.locator('.kc-person').first().locator('dd').filter({hasText:'흰색 운동화'}).count());
+await page.evaluate(async()=>{TEST_CONTEXT.chat.push({send_date:'2',is_user:false,swipe_id:0,mes:'신발을 신고 밖으로 나갔다.'});await TEST_CONTEXT.eventSource.emit('MESSAGE_RECEIVED',2)});
+await page.waitForFunction(()=>document.querySelector('.kc-main .kc-scene')?.textContent.includes('거리'));await saved();
+await page.evaluate(async()=>{TEST_CONTEXT.chat[2].swipe_id=1;TEST_CONTEXT.chat[2].mes='맨발로 밖으로 나갔다.';await TEST_CONTEXT.eventSource.emit('MESSAGE_SWIPED',2)});
+await page.locator('.kc-person').first().locator('dd').filter({hasText:'흰색 운동화'}).waitFor({state:'detached'});await saved();
+await page.evaluate(async()=>{TEST_CONTEXT.chat[2].is_system=true;await TEST_CONTEXT.eventSource.emit('MESSAGE_UPDATED',2)});
+await page.locator('.kc-person').first().locator('dd').filter({hasText:'흰색 운동화'}).waitFor({state:'visible'});await saved();
 
 // Streaming causes no reader request; duplicate completion events coalesce.
 const beforeStreaming=await page.evaluate(()=>calls.length);

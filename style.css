@@ -122,3 +122,12 @@
 
 .kc-collected{margin-top:9px;padding-top:7px;border-top:1px solid var(--SmartThemeBorderColor,#8886);font-size:11px}.kc-collected summary{cursor:pointer;font-size:12px}.kc-collected-note{font-size:10px;opacity:.7;margin:6px 0}.kc-collected-people{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.kc-collected section{min-width:0}.kc-collected strong{display:block;padding:5px 0}.kc-collected dl{margin:0}.kc-collected dl>div{display:grid;grid-template-columns:62px minmax(0,1fr);gap:5px;padding:3px 0}.kc-collected dt{opacity:.75}.kc-collected dd{margin:0;overflow-wrap:anywhere;white-space:normal}.kc-inline-card .kc-collected{border-color:var(--ki-line)}
 @media(max-width:600px){.kc-collected-people{grid-template-columns:minmax(0,1fr)}.kc-collected,.kc-collected summary{font-size:10px}.kc-collected dl>div{grid-template-columns:58px minmax(0,1fr)}}
+
+/* Compact header actions stay available when the memo is folded. */
+.kc-inline-head{display:flex;align-items:center;gap:4px;padding-right:10px}
+.kc-inline-head .kc-inline-toggle{width:auto;flex:1;min-width:0;padding-right:5px!important}
+.kc-inline-tools,.kc-quick-tools{display:flex;align-items:center;gap:4px;flex:none}
+.kc-inline-tools button,.kc-bubble .kc-quick-tools button{font-size:10px;line-height:1.25;padding:4px 6px;min-height:26px;white-space:nowrap;border:1px solid var(--ki-line,var(--kc-edge));border-radius:5px;background:var(--ki-tab,var(--kc-paper))}
+.kc-inline-tools button:disabled{opacity:.45;cursor:default}
+.kc-bubble header>span{white-space:nowrap}.kc-bubble header{gap:5px}.kc-quick-tools{margin-left:auto}
+@container(max-width:340px){.kc-inline-head{padding-right:7px;gap:2px}.kc-inline-head .kc-inline-toggle{gap:5px;padding-left:9px!important}.kc-inline-head .kc-inline-toggle>span:first-of-type{font-size:11px}.kc-inline-tools{gap:3px}.kc-inline-tools button{font-size:9px;padding:4px}.kc-inline-head .kc-inline-chevron{font-size:13px}}

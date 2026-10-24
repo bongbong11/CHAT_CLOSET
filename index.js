@@ -21,6 +21,7 @@ const storage=await new ServerStorage({headers:()=>getContext().getRequestHeader
 const store=new Store(storage);
 const settings=()=>store.data.settings;
 const engine=new Engine(store,(system,data,signal,profileId,trace)=>host.request(profileId,system,data,signal,'scene',trace),(data,signal,profileId,trace)=>host.request(profileId,OUTFIT_ITEMS,data,signal,'items',trace));
+let manualRead=null;
 let analysisController=null,backgroundTask='',deferredRead=false,deferredForce=false,revision=0,timer=null,prepared=null,pending=false,injectionError='',runningRead=null,readId=0,generating=false,generationStopped=false,messageView=null;
 const cancel=()=>{runningRead?.trace?.finish('cancelled','진행 중 판독 취소');analysisController?.trace?.finish('cancelled','진행 중 작업 취소');revision++;readId++;engine.cancel();analysisController?.abort();analysisController=null;backgroundTask='';deferredRead=false;deferredForce=false;runningRead=null;pending=false;prepared=null;clearTimeout(timer);timer=null;ui.toast(false);};
 function startTask(label,{notify=true}={}){
@@ -32,7 +33,7 @@ function finishTask(controller){if(analysisController!==controller)return;contro
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
 const sameIdentity=expected=>{const actual=host.identity();return !!expected&&actual?.id===expected.id&&actual.chat===expected.chat&&actual.personaKey===expected.personaKey;};
 const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcile&&reconcileDisplay(v.b,v.i.chat,messages,settings().displayLimit);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
-const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!(v&&trustedTimeline(v.b,host.messages(),v.i.chat)),settings:settings(),injectionError,pending,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
+const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!(v&&trustedTimeline(v.b,host.messages(),v.i.chat)),settings:settings(),injectionError,pending:pending||!!manualRead,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
  const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,profileId:settings().profileId});
  try{await storage.pull();}catch(error){trace.fail(error,'storage-pull');throw error;}
@@ -51,6 +52,14 @@ async function read(chat=host.context().chat,force=false){
   }catch(error){trace.fail(error,'read');throw error;}finally{try{await storage.flush();trace.finish(trace.decision||'unchanged','판독·서버 저장 완료');}catch(error){trace.fail(error,'storage');throw error;}finally{if(id===readId){runningRead=null;pending=false;ui.toast(false);ui.refresh();}}}
  })();
  runningRead={id,key,messageKey,promise,trace};return promise;
+}
+function readCurrent(){
+ if(manualRead)return manualRead;
+ if(!settings().enabled)throw Error('설정에서 사용함을 켜세요.');
+ const v=current();if(!v)throw Error('취향을 먼저 분석하거나 브랜치를 연결하세요.');
+ if(pending||runningRead||generating||analysisController)return Promise.resolve(null);
+ v.b.suspended=false;
+ manualRead=read(undefined,true).finally(()=>{manualRead=null;ui.refresh();});ui.refresh();return manualRead;
 }
 async function analyze(selection){
  const expected=host.identity();await storage.pull();
@@ -195,7 +204,7 @@ async function newBranch(mode,name,bid){
  }
  store.bind(i.id,target,i.chat);store.branch(i.id,target).personaKey=i.personaKey;restoreActive();store.save();ui.refresh();
 }
-const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>messageView?.refresh(),profiles:()=>host.profiles(),sheet:kind=>host.sheet(kind),lore:kind=>host.lore(kind),analyze,refillWardrobe,read:()=>read(undefined,true),newBranch,
+const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>messageView?.refresh(),profiles:()=>host.profiles(),sheet:kind=>host.sheet(kind),lore:kind=>host.lore(kind),analyze,refillWardrobe,read:readCurrent,newBranch,
  logs,logError:error=>logs.error(error,logScope()),flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),cleanup,
  translateProfile,
  saveReportTranslation(who,source,translated,language){const v=current();if(!v||hash(JSON.stringify(v.b.profiles[who]?.fields))!==hash(JSON.stringify(source.fields)))return;v.b.reportTranslations??={};if(translated)v.b.reportTranslations[who]={signature:hash(JSON.stringify(source.fields)),fields:Object.fromEntries(Object.entries(translated.fields).map(([key,field])=>[key,{value:field.value,evidence:field.evidence}])),language};else if(v.b.reportTranslations[who])v.b.reportTranslations[who].language=language;store.save();},
@@ -206,7 +215,7 @@ const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>mess
  async testConnection(){return host.request(settings().profileId,'Return only {"ok":true}.',{},new AbortController().signal,'test').then(x=>{if(x.ok!==true)throw Error('연결 확인 응답이 잘못되었습니다.');});},
  remove(kind,bid){cancel();const i=host.identity();if(kind==='all'){store.deleteAll();outputGuard.remove();}else if(i){if(kind==='chat')store.resetChat(i.id,i.chat);if(kind==='branch')store.deleteBranch(i.id,bid||current()?.bid);if(kind==='character')store.deleteCharacter(i.id);}ui.refresh();},
 });
-messageView=createMessageOutfits({base:new URL('.',import.meta.url),context:getContext,state,saveView(message,prefix,patch){
+messageView=createMessageOutfits({base:new URL('.',import.meta.url),context:getContext,state,read:()=>readCurrent(),open:()=>ui.open(),error:error=>ui.error(error),saveView(message,prefix,patch){
  const v=current();if(!v)return;const saved=savedDisplay(v.b,v.i.chat,message,prefix);if(!saved)return;
  if(typeof patch.folded==='boolean')saved.record.folded=patch.folded;
  if(['character','persona'].includes(patch.tab))saved.record.tab=patch.tab;

@@ -1,5 +1,15 @@
 export const MAIN_WARDROBE={top:{label:'상의',category:'상의',counts:[4,7,10]},bottom:{label:'하의',category:'하의',counts:[3,5,7]},outerwear:{label:'겉옷',category:'겉옷',counts:[1,3,5]},footwear:{label:'신발',category:'신발',counts:[2,3,5]}};
 export const WARDROBE_TABS=[...Object.entries(MAIN_WARDROBE).map(([id,v])=>({id,...v})),{id:'underwear',label:'속옷',category:'속옷'},{id:'accessory',label:'액세서리·소품',category:'소품'}];
+export function newItemPolicy(value){return ({'적게':'low','보통':'medium','많이':'high','끄기':'off',false:'off',true:'medium'})[value]||(['off','low','medium','high'].includes(value)?value:'medium');}
+export function underwearSlot(item){
+ if(item.category!=='속옷')return '';
+ const name=item.name||'';
+ if(/\b(?:socks?|stockings?|tights|pantyhose)\b|양말|스타킹|타이츠/i.test(name))return 'socks';
+ if(/\bbra(?:lette)?s?\b|브라|브래지어/i.test(name))return 'bra';
+ if(/\b(?:undershirt|vest|camisole)\b|런닝|러닝셔츠|속셔츠|캐미솔/i.test(name))return 'undershirt';
+ if(['bra','briefs','socks','undershirt'].includes(item.traits?.slot))return item.traits.slot;
+ return 'briefs';
+}
 export function normalizeTraits(value={}){
  const result={};
  for(const [key,allowed] of Object.entries({use:['casual','work','formal','home','care'],climate:['hot','mild','cold','rain'],fit:['loose','adjustable','maternity','front_opening','flat','easy_on']})){
@@ -7,13 +17,24 @@ export function normalizeTraits(value={}){
  }
  if(['upper','lower','full','feet','support'].includes(value.coverage))result.coverage=value.coverage;
  if(typeof value.temporary==='boolean')result.temporary=value.temporary;
+ if(['bra','briefs','socks','undershirt'].includes(value.slot))result.slot=value.slot;
  return result;
 }
 export function itemTraits(item){
  const traits=normalizeTraits(item.traits),description=[item.name,...(item.features||[])].join(' ').toLowerCase();
  const add=(key,value)=>{if(!traits[key].includes(value))traits[key].push(value);};
  if(/\b(?:hospital|patient|surgical)\s+(?:gown|robe)|\bbath(?:ing)?\s+(?:towel|robe)|\btowel\b/.test(description))traits.temporary??=true;
- if(!traits.coverage)traits.coverage=/\b(?:dress(?!\s+shirt)|gown|jumpsuit|romper|robe)\b/i.test(item.name||'')?'full':({'상의':'upper','하의':'lower','신발':'feet'}[item.category]||'support');
+ if(!traits.coverage)traits.coverage=/\b(?:dress(?!\s+shirt)|gown|jumpsuit|romper|robe)\b|원피스|드레스|점프수트/i.test(item.name||'')?'full':({'상의':'upper','하의':'lower','신발':'feet'}[item.category]||'support');
+ if(/타월|수건|환자복/.test(description))traits.temporary??=true;
+ if(/루즈|여유|오버사이즈|릴랙스/.test(description))add('fit','loose');
+ if(/밴딩|허리.*(?:조절|고무)|드로스트링/.test(description))add('fit','adjustable');
+ if(/임부|임산부/.test(description))add('fit','maternity');
+ if(/버튼다운|앞.*(?:단추|지퍼)/.test(description))add('fit','front_opening');
+ if(/운동화|스니커즈|슬리퍼|플랫/.test(description))add('fit','flat');
+ if(/슬랙스|테일러드|수트|정장/.test(description))add('use','formal');
+ if(/티셔츠|맨투맨|후드|청바지|조거|트레이닝/.test(description))add('use','casual');
+ if(/홈웨어|실내복|라운지/.test(description))add('use','home');
+ if(/\b(?:lounge|homewear|housewear|sweatpants|joggers)\b/.test(description))add('use','home');
  if(/\b(?:loose|relaxed|oversized|roomy)\b/.test(description))add('fit','loose');
  if(/\b(?:elastic|adjustable|drawstring)\b/.test(description))add('fit','adjustable');
  if(/\bmaternity\b/.test(description))add('fit','maternity');

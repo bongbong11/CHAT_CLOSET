@@ -1,5 +1,5 @@
 // Pure scene facts and clothing rules. No model, storage or DOM access.
-import {itemTraits} from './wardrobe.js';
+import {itemTraits,underwearSlot,newItemPolicy} from './wardrobe.js';
 
 const PEOPLE=['character','persona'];
 const CATEGORIES=['상의','하의','속옷','신발','겉옷','소품'];
@@ -166,9 +166,9 @@ function sameGarment(item,action){
  const needle=tokens(action.name);if(!needle.length)return true;
  const haystack=tokens(item.name);return needle.every(word=>haystack.includes(word));
 }
-const regularBriefs=item=>item.category==='속옷'&&!/\b(?:sock|stocking|bra|undershirt|vest)\b/i.test(item.name||'')&&!/\b(?:socks|stockings)\b/i.test(item.name||'');
+const regularBriefs=item=>underwearSlot(item)==='briefs';
 function slot(item){
- if(item.category==='속옷'){const name=item.name||'';if(/\b(?:socks?|stockings?)\b/i.test(name))return 'socks';if(/\bbra\b/i.test(name))return 'bra';if(/\b(?:undershirt|vest)\b/i.test(name))return 'undershirt';return 'briefs';}
+ if(item.category==='속옷')return underwearSlot(item);
  if(item.category==='소품')return tokens(item.name).at(-1)||item.id;
  return item.category;
 }
@@ -178,14 +178,30 @@ function clothingNeeds(context){
  if(/arm.{0,15}(?:cast|immobili[sz]ed)|(?:cast|immobili[sz]ed).{0,15}arm/.test(conditions))needs.push('Arm access');
  return needs.join(' ').toLowerCase();
 }
-function unsuitable(item,context){
+function suitability(item,context){
  const traits=itemTraits(item),needs=clothingNeeds(context),description=[item.name,...(item.features||[])].join(' ').toLowerCase();
- if(/waist|abdomen|belly/.test(needs)&&/tight|slim|compression|rigid|non.stretch/.test(description)&&!traits.fit.some(v=>['loose','adjustable','maternity'].includes(v)))return true;
- if(/loose fit|no pressure/.test(needs)&&/tight|slim|compression/.test(description)&&!traits.fit.includes('loose'))return true;
- if(/flat shoe|low heel|no heel|balance/.test(needs)&&/high.heel|stiletto/.test(description))return true;
- if(/front.open|arm access/.test(needs)&&/pullover|turtleneck/.test(description)&&!traits.fit.includes('front_opening'))return true;
- if(context.purpose==='formal'&&traits.use.includes('casual')&&!traits.use.includes('formal'))return true;
- return false;
+ const outdoors=(context.space==='public'||['outside','work','school'].includes(context.location))&&['outdoors','working','formal'].includes(context.phase);
+ const cold=context.temperature!==null?context.temperature<12:context.weather==='cold'||context.weather==='snow'||context.season==='winter';
+ if(outdoors&&cold&&item.category==='겉옷'&&traits.climate.includes('hot')&&!traits.climate.includes('cold'))return {reason:'cold_protection',level:1,climate:['cold']};
+ const waist=item.category==='하의'||item.category==='속옷'&&slot(item)==='briefs'||traits.coverage==='full';
+ if(waist&&/waist|abdom|belly/.test(needs)&&/tight|slim|compression|rigid|non.stretch|슬림|압박|비신축/.test(description)&&!traits.fit.some(v=>['loose','adjustable','maternity'].includes(v)))return {reason:'waist_pressure',level:1,fit:['loose','adjustable','maternity']};
+ if(/loose fit|no pressure/.test(needs)&&/tight|slim|compression|슬림|압박/.test(description)&&!traits.fit.includes('loose'))return {reason:'pressure',level:1,fit:['loose']};
+ if(item.category==='신발'&&/flat shoe|low heel|no heel|balance/.test(needs)&&/high.heel|stiletto|하이힐|스틸레토/.test(description))return {reason:'balance',level:1,fit:['flat']};
+ if(['상의','겉옷'].includes(item.category)&&/front.open|arm access/.test(needs)&&/pullover|turtleneck|풀오버|터틀넥/.test(description)&&!traits.fit.includes('front_opening'))return {reason:'arm_access',level:1,fit:['front_opening']};
+ if(context.purpose==='formal'&&traits.use.includes('casual')&&!traits.use.includes('formal')&&['상의','하의','신발','겉옷'].includes(item.category))return {reason:'formal_use',level:2,use:['formal']};
+ if(context.location==='home'&&context.phase==='resting'&&['상의','하의'].includes(item.category)&&traits.use.some(v=>['formal','work'].includes(v))&&!traits.use.some(v=>['home','casual'].includes(v)))return {reason:'home_use',level:2,use:['home','casual']};
+ return null;
+}
+const unsuitable=(item,context)=>!!suitability(item,context);
+function matchKey(person,policy,exceptions,owned){
+ const value=JSON.stringify([2,person.context,policy,exceptions,person.nude,person.origins,person.items.map(({id,name,features,traits,wearing})=>[id,name,features,traits,wearing]),owned.map(({id,name,features,traits})=>[id,name,features,traits]).sort((a,b)=>a[0].localeCompare(b[0]))]);
+ let h=2166136261;for(const c of value){h^=c.charCodeAt(0);h=Math.imul(h,16777619);}return (h>>>0).toString(36);
+}
+export function satisfiesRequest(item,request,context){
+ if(item.category!==request.category||request.slot&&slot(item)!==request.slot)return false;
+ if(request.reason==='explicit')return sameGarment(item,{...request,category:item.category});
+ const requirements=request.requirements||{},traits=itemTraits(item);
+ return !unsuitable(item,context)&&['use','fit','climate'].every(key=>!requirements[key]?.length||requirements[key].some(value=>traits[key].includes(value)));
 }
 function score(item,context,preferred){
  const traits=itemTraits(item);let value=preferred.includes(item.id)?12:0;
@@ -196,27 +212,34 @@ function score(item,context,preferred){
  if(traits.climate.includes(context.weather))value+=4;
  if(context.season==='winter'&&traits.climate.includes('cold'))value+=3;
  if(context.season==='summer'&&traits.climate.includes('hot'))value+=3;
+ if(/pregnan/i.test(context.conditions.join(' '))&&traits.fit.some(v=>['loose','adjustable','maternity'].includes(v)))value+=3;
  const needs=clothingNeeds(context);
- if(/waist|abdomen|belly/.test(needs)&&traits.fit.some(v=>['loose','adjustable','maternity'].includes(v)))value+=8;
+ if(/waist|abdom|belly/.test(needs)&&traits.fit.some(v=>['loose','adjustable','maternity'].includes(v)))value+=8;
  if(/front.open|arm access/.test(needs)&&traits.fit.includes('front_opening'))value+=8;
  if(/flat shoe|low heel|no heel|balance/.test(needs)&&traits.fit.includes('flat'))value+=8;
  return value;
 }
 
 // A proposed result stays local until all missing garments are generated and validated.
-export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={}){
- const state=ensureContexts(structuredClone(baseline)),missing=[];
+export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},options={}){
+ const state=ensureContexts(structuredClone(baseline)),missing=[],decisions=[],policy=newItemPolicy(options.newItems);
  if(facts.scene)Object.assign(state.scene,facts.scene);
  if(facts.sceneKo)state.sceneKo={...(state.sceneKo||{}),...facts.sceneKo};
  for(const who of PEOPLE){
-  const change=facts.changes[who];if(!change)continue;
+  const change=facts.changes[who]||{context:{},actions:[]};
   const person=state.people[who],before=normalizeContext(person.context),context=patchContext(before,change.context);person.context=context;
   if(change.transition&&change.context.exception===undefined)context.exception='';
   const exceptions=policies[who]?.wardrobeExceptions||{},categoryKeys={'상의':'top','하의':'bottom','속옷':'underwear','신발':'footwear','겉옷':'outerwear','소품':'accessory'};
   const owned=(wardrobes[who]||[]).filter(item=>item.available!==false),protectedIds=new Set(),blocked=new Set();
+  person.origins=Object.fromEntries(Object.entries(person.origins||{}).filter(([id])=>person.items.some(item=>item.id===id)));
+  const decision=(action,data={})=>decisions.push({who,action,...data});
   const preferred=[...(memory[who]?.beforeUndress||[]),...(memory[who]?.lastDressed||[])];
   const choose=(category,predicate=()=>true)=>owned.filter(item=>item.category===category&&!blocked.has(item.id)&&!itemTraits(item).temporary&&!unsuitable(item,context)&&predicate(item)).sort((a,b)=>score(b,context,preferred)-score(a,context,preferred)||a.id.localeCompare(b.id))[0];
-  const need=(category,reason,extra={})=>{if(!missing.some(item=>item.who===who&&item.category===category&&item.reason===reason&&item.name===extra.name))missing.push({who,category,reason,...extra});};
+  const need=(category,reason,extra={})=>{
+   const level=extra.level||1,{level:_,...details}=extra;
+   if(reason!=='explicit'&&(policy==='off'||({low:1,medium:2,high:3}[policy]||2)<level)){decision('generation_skipped',{category,reason,policy,requirements:details.requirements});return;}
+   if(!missing.some(item=>item.who===who&&item.category===category&&item.slot===details.slot&&item.reason===reason&&item.name===details.name)){missing.push({who,category,reason,...details});decision('generation_requested',{category,reason,...details});}
+  };
   const wear=(item,{layer=false,wearing,wearingKo}={})=>{
    const current=person.items.find(value=>value.id===item.id);
    if(!layer)person.items=person.items.filter(value=>value.id===item.id||slot(value)!==slot(item));
@@ -226,7 +249,7 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={}){
    const index=person.items.findIndex(value=>value.id===item.id);if(index<0)person.items.push(next);else person.items[index]=next;person.nude=false;
   };
   for(const action of change.actions||[]){
-   if(action.op==='nude'){for(const item of person.items)blocked.add(item.id);person.items=[];person.nude=true;blocked.add('all');continue;}
+   if(action.op==='nude'){for(const item of person.items)blocked.add(item.id);person.items=[];person.nude=true;blocked.add('all');decision('explicit_undress');continue;}
    const worn=person.items.filter(item=>sameGarment(item,action));
    if(action.op==='remove'){
     if(!worn.length&&action.name)continue;
@@ -235,28 +258,41 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={}){
    }
    if(action.op==='adjust'){
     // Never guess which of several garments was adjusted.
-    if(worn.length===1){worn[0].wearing=action.wearing;if(action.wearingKo)worn[0].wearingKo=action.wearingKo;else delete worn[0].wearingKo;protectedIds.add(worn[0].id);}continue;
+    if(worn.length===1){worn[0].wearing=action.wearing;if(action.wearingKo)worn[0].wearingKo=action.wearingKo;else delete worn[0].wearingKo;protectedIds.add(worn[0].id);person.origins[worn[0].id]='explicit';decision('adjusted',{id:worn[0].id,reason:'explicit'});}continue;
    }
    const matched=person.items.find(item=>sameGarment(item,action))||owned.find(item=>sameGarment(item,action)&&item.name.toLowerCase()===action.name.toLowerCase())||owned.find(item=>sameGarment(item,action));
-   if(matched){wear(matched,action);protectedIds.add(matched.id);}
+   if(matched){wear(matched,action);protectedIds.add(matched.id);person.origins[matched.id]='explicit';decision('explicit_wear',{id:matched.id});}
    else need(action.category,'explicit',{name:action.name,color:action.color||'',brand:action.brand||'',wearing:action.wearing||'',wearingKo:action.wearingKo||'',layer:!!action.layer});
   }
   const relevant=Object.keys(change.context||{}).some(key=>JSON.stringify(before[key])!==JSON.stringify(context[key]));
   const publicPlace=context.space==='public'||['outside','work','school'].includes(context.location);
   const completed=publicPlace&&['outdoors','working','formal'].includes(context.phase);
   const publicTransition=completed&&(change.transition||relevant&&(['location','space','phase'].some(key=>before[key]!==context[key])||before.exception!==context.exception&&!context.exception));
+  const sceneTransition=publicTransition||!!(change.transition&&before.location!==context.location);
   const privatePhase=['washing','after_washing','sleeping'].includes(context.phase);
   const bootstrap=before.location==='unknown'&&context.location!=='unknown'&&context.phase!=='care'&&!person.nude&&!person.items.some(item=>['upper','lower','full'].includes(itemTraits(item).coverage))&&owned.some(item=>['upper','full'].includes(itemTraits(item).coverage)&&!itemTraits(item).temporary);
   if(context.phase==='washing'&&before.phase!=='washing'&&context.exception!=='keep'&&!protectedIds.size&&!missing.some(item=>item.who===who&&item.reason==='explicit')){person.items=[];person.nude=true;continue;}
   if(change.automatic===false||context.exception==='keep'||context.exception==='undressed'||blocked.has('all')||privatePhase)continue;
-  if(!relevant&&!publicTransition)continue;
+  if(person.manualOutfit&&!sceneTransition){decision('kept',{reason:'manual_outfit'});continue;}
+  if(sceneTransition)delete person.manualOutfit;
+  const assessment=matchKey(person,policy,exceptions,owned);
+  if(!relevant&&!sceneTransition&&person.matchKey===assessment){decision('kept',{reason:'already_checked'});continue;}
   // Change existing pieces only when a newly established requirement makes them unsuitable.
   for(const current of [...person.items]){
-   if(protectedIds.has(current.id)||blocked.has(current.category)||!unsuitable(current,context))continue;
-   const candidate=choose(current.category,item=>item.id!==current.id&&slot(item)===slot(current));
-   if(candidate)wear(candidate);else need(current.category,'suitability',current.category==='속옷'?{slot:slot(current)}:{});
+   if(current.category==='겉옷'&&itemTraits(current).fit.includes('front_opening')&&/waist|abdom|belly/.test(clothingNeeds(context))&&/\b(?:buttoned|fastened|zipped)\b/.test(current.wearing||'')&&!protectedIds.has(current.id)&&!['explicit','manual'].includes(person.origins[current.id])){
+    current.wearing='worn open';current.wearingKo='앞을 열어 입음';decision('adjusted',{id:current.id,reason:'closure_pressure'});
+   }
+   const mismatch=suitability(current,context);if(!mismatch)continue;
+   if(protectedIds.has(current.id)||blocked.has(current.category)||!sceneTransition&&['explicit','manual'].includes(person.origins[current.id])){decision('kept',{id:current.id,reason:'established_outfit',mismatch:mismatch.reason});continue;}
+   if(exceptions[categoryKeys[current.category]]){decision('kept',{id:current.id,reason:'ownership_exception'});continue;}
+   const request={who,category:current.category,reason:'suitability',...(current.category==='속옷'?{slot:slot(current)}:{}),requirements:Object.fromEntries(['use','fit','climate'].filter(key=>mismatch[key]).map(key=>[key,mismatch[key]]))};
+   const rejected=owned.filter(item=>item.category===current.category&&!satisfiesRequest(item,request,context)).slice(0,8).map(item=>({id:item.id,reason:suitability(item,context)?.reason||'requirements_or_slot'}));
+   const candidate=choose(current.category,item=>item.id!==current.id&&slot(item)===slot(current)&&satisfiesRequest(item,request,context));
+   if(candidate){wear(candidate);person.origins[candidate.id]='automatic';decision('replaced',{from:current.id,to:candidate.id,reason:mismatch.reason,rejected});}
+   else{decision('no_suitable_owned',{id:current.id,reason:mismatch.reason,rejected});need(current.category,'suitability',{level:mismatch.level,cause:mismatch.reason,...(request.slot?{slot:request.slot}:{}),requirements:request.requirements});}
   }
-  if(publicTransition||bootstrap){
+  const underwearCompletion=!person.matchKey&&!person.nude&&!person.manualOutfit&&context.location==='home'&&context.phase==='resting'&&person.items.some(item=>underwearSlot(item)==='bra')&&person.items.some(item=>['upper','full'].includes(itemTraits(item).coverage));
+  if(publicTransition||bootstrap||underwearCompletion){
    const incomplete=person.nude||!person.items.some(item=>['upper','full'].includes(itemTraits(item).coverage)&&!itemTraits(item).temporary);
    if(incomplete){
     const restore=memory[who]?.beforeUndress?.length?memory[who].beforeUndress:memory[who]?.lastDressed||[];
@@ -269,24 +305,32 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={}){
    }
    const full=()=>person.items.some(item=>itemTraits(item).coverage==='full'&&(!itemTraits(item).temporary||protectedIds.has(item.id)));
    for(const category of ['상의','하의','속옷','신발']){
+    if(underwearCompletion&&!publicTransition&&!bootstrap&&category!=='속옷')continue;
     if(category==='신발'&&!publicPlace)continue;
     if(blocked.has(category)||exceptions[categoryKeys[category]]||category==='신발'&&context.exception==='barefoot')continue;
     const exists=category==='속옷'?person.items.some(regularBriefs):person.items.some(item=>item.category===category&&(!itemTraits(item).temporary||protectedIds.has(item.id)));
     if(exists||['상의','하의'].includes(category)&&full())continue;
     const candidate=choose(category,category==='속옷'?regularBriefs:()=>true);
-    if(candidate)wear(candidate);else need(category,'public_coverage');
+    if(candidate){wear(candidate);person.origins[candidate.id]='automatic';decision('completed',{id:candidate.id,reason:'coverage'});}else need(category,'public_coverage',category==='속옷'?{slot:'briefs'}:{});
    }
    // Temporary towels/gowns cannot silently become a permanent outdoor outfit.
    if(person.items.some(item=>['상의','하의'].includes(item.category)&&!itemTraits(item).temporary))person.items=person.items.filter(item=>!itemTraits(item).temporary||protectedIds.has(item.id));
   }
   const cold=context.temperature!==null?context.temperature<12:context.weather==='cold'||context.weather==='snow'||context.season==='winter';
   const hot=context.temperature!==null?context.temperature>=26:context.weather==='hot';
-  if(completed&&cold&&relevant&&!blocked.has('겉옷')&&!exceptions.outerwear&&!person.items.some(item=>item.category==='겉옷')){const candidate=choose('겉옷');if(candidate)wear(candidate);else need('겉옷','cold');}
-  if(completed&&hot&&relevant)person.items=person.items.filter(item=>item.category!=='겉옷'||!itemTraits(item).climate.includes('cold')||protectedIds.has(item.id));
+  if(completed&&cold&&!blocked.has('겉옷')&&!exceptions.outerwear&&!person.items.some(item=>item.category==='겉옷')){const candidate=choose('겉옷',item=>itemTraits(item).climate.includes('cold'));if(candidate){wear(candidate);person.origins[candidate.id]='automatic';decision('completed',{id:candidate.id,reason:'cold'});}else need('겉옷','cold',{requirements:{climate:['cold']}});}
+  if(completed&&hot)person.items=person.items.filter(item=>item.category!=='겉옷'||!itemTraits(item).climate.includes('cold')||protectedIds.has(item.id)||!sceneTransition&&['explicit','manual'].includes(person.origins[item.id]));
+  if(completed&&!cold&&context.weather==='rain'&&policy==='high'&&!exceptions.outerwear&&!blocked.has('겉옷')&&!person.items.some(item=>itemTraits(item).climate.includes('rain'))&&!person.items.some(item=>item.category==='겉옷'&&(protectedIds.has(item.id)||['explicit','manual'].includes(person.origins[item.id])))){
+   const candidate=choose('겉옷',item=>itemTraits(item).climate.includes('rain'));
+   if(candidate){wear(candidate);decision('completed',{id:candidate.id,reason:'rain_protection'});}else need('겉옷','rain_protection',{level:3,requirements:{climate:['rain']}});
+  }
   if(person.items.length)person.nude=false;
+  person.origins=Object.fromEntries(Object.entries(person.origins).filter(([id])=>person.items.some(item=>item.id===id)));
+  person.matchKey=matchKey(person,policy,exceptions,owned);
+  if(!decisions.some(item=>item.who===who))decision('kept',{reason:'suitable_or_unknown_fit'});
  }
  if(missing.length>12)throw Error('한 장면에서 필요한 의상이 너무 많습니다. 판독 내용을 로그에서 확인하세요.');
- return {state,missing};
+ return {state,missing,decisions};
 }
 
 export function sceneRequest(baseline,messages,contextMessages=[],names={}){

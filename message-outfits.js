@@ -41,9 +41,9 @@ export function createMessageOutfits(api){
    const saved=savedDisplay(state.branch,identity.chat,entry.message,entry.prefix),key=displayKey(entry.message);
    if(!saved&&index!==latest){card?.remove();continue;}
    const view=saved?.record||local.get(key)||{folded:false,tab:'character'};
-   const pending=(state.pending||state.generating)&&index===latest;
+   const busy=!!(state.pending||state.generating||state.backgroundTask),pending=busy&&index===latest;
    const ink=getComputedStyle(node).color;
-   const signature=hash(JSON.stringify([scope,key,entry.prefix,saved?.state,view.folded,view.tab,state.settings.brands,identity.name,identity.userName,pending,ink]));
+   const signature=hash(JSON.stringify([scope,key,entry.prefix,saved?.state,view.folded,view.tab,state.settings.brands,identity.name,identity.userName,pending,busy,state.backgroundTask,ink]));
    if(card?.dataset.signature===signature)continue;
    if(!card){card=document.createElement('section');card.className='kc-inline-card';textNode.insertAdjacentElement('afterend',card);}
    card.dataset.signature=signature;card.dataset.viewKey=key;card.setAttribute('aria-label','착장정보');
@@ -60,7 +60,7 @@ export function createMessageOutfits(api){
    };
    const scene=saved?.state.sceneKo||{},summary=[scene.place,scene.activity].filter(v=>koreanDisplay(v)).join(' · ');
    const collectedOpen=!!card.querySelector('.kc-collected')?.open;
-   card.innerHTML=`<span class="kc-inline-tape" aria-hidden="true"></span><button type="button" class="kc-inline-toggle" aria-expanded="${!view.folded}" aria-controls="${bodyId}"><img src="${asset(view.folded?'kikki-closed.webp':'kikki-open.webp')}" alt="끼끼"><span>착장정보</span><span class="kc-inline-chevron" aria-hidden="true">${view.folded?'⌄':'⌃'}</span></button><div class="kc-inline-body" id="${bodyId}" ${view.folded?'hidden':''}>${saved?`<div class="kc-inline-tabs" role="tablist" aria-label="착장 인물">${PEOPLE.map(who=>`<button type="button" id="${bodyId}-tab-${who}" role="tab" aria-selected="${view.tab===who}" aria-controls="${bodyId}-${who}" data-who="${who}">${escape(names[who])}</button>`).join('')}</div><div class="kc-inline-people">${PEOPLE.map(personHtml).join('')}</div>${summary?`<footer>${escape(summary)}</footer>`:''}`:`<p class="kc-inline-empty" role="status">${pending?'착장을 확인하고 있어요.':'착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.'}</p>`}</div>`;
+   card.innerHTML=`<span class="kc-inline-tape" aria-hidden="true"></span><div class="kc-inline-head"><button type="button" class="kc-inline-toggle" aria-expanded="${!view.folded}" aria-controls="${bodyId}"><img src="${asset(view.folded?'kikki-closed.webp':'kikki-open.webp')}" alt="끼끼"><span>착장정보</span><span class="kc-inline-chevron" aria-hidden="true">${view.folded?'⌄':'⌃'}</span></button><div class="kc-inline-tools"><button type="button" data-kc-action="read" ${busy?'disabled':''}>현재 옷 보기</button><button type="button" data-kc-action="open">의상실 열기</button></div></div><div class="kc-inline-body" id="${bodyId}" ${view.folded?'hidden':''}>${saved?`<div class="kc-inline-tabs" role="tablist" aria-label="착장 인물">${PEOPLE.map(who=>`<button type="button" id="${bodyId}-tab-${who}" role="tab" aria-selected="${view.tab===who}" aria-controls="${bodyId}-${who}" data-who="${who}">${escape(names[who])}</button>`).join('')}</div><div class="kc-inline-people">${PEOPLE.map(personHtml).join('')}</div>${summary?`<footer>${escape(summary)}</footer>`:''}`:`<p class="kc-inline-empty" role="status">${pending?'착장을 확인하고 있어요.':'착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.'}</p>`}</div>`;
    if(saved){card.querySelector('.kc-inline-body').insertAdjacentHTML('beforeend',collectedHtml(saved.state,names));card.querySelector('.kc-collected').open=collectedOpen;}
    function update(patch){
     if(scope!==currentScope)return;
@@ -68,6 +68,8 @@ export function createMessageOutfits(api){
     else local.set(key,{...view,...patch});
     render();
    }
+   card.querySelector('[data-kc-action="read"]').addEventListener('click',async event=>{event.stopPropagation();try{await api.read();}catch(error){api.error(error);}});
+   card.querySelector('[data-kc-action="open"]').addEventListener('click',event=>{event.stopPropagation();api.open();});
    card.querySelector('.kc-inline-toggle').addEventListener('click',()=>update({folded:!view.folded}));
    card.querySelectorAll('.kc-inline-tabs button').forEach(button=>button.addEventListener('click',()=>update({tab:button.dataset.who})));
   }

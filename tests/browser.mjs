@@ -97,7 +97,7 @@ await page.evaluate(()=>{window.modelWait=true;window.nextScene={scene:{place:'H
 await page.locator('[data-action="read"]').click();await page.locator('.kc-toast').waitFor({state:'visible'});const toastBox=await page.locator('.kc-toast').boundingBox();assert.ok(toastBox.y>600);await page.locator('.kc-toast').click();assert.equal(await page.locator('.kc-toast').count(),0);
 const beforePendingRP=await page.evaluate(()=>calls.length);
 await page.evaluate(()=>kikkiClosetInterceptor(TEST_CONTEXT.chat,4096,()=>{},'normal'));assert.equal(await page.evaluate(()=>calls.length),beforePendingRP);
-await page.locator('[data-action="read"]').click();assert.equal(await page.evaluate(()=>calls.length),beforePendingRP);assert.equal(await page.locator('.kc-toast').count(),0);
+assert.equal(await page.locator('[data-action="read"]').isDisabled(),true);await page.locator('[data-action="read"]').dispatchEvent('click');assert.equal(await page.evaluate(()=>calls.length),beforePendingRP);assert.equal(await page.locator('.kc-toast').count(),0);
 await page.evaluate(()=>{window.modelWait=false;window.releaseModel();});await page.waitForFunction(()=>document.querySelector('.kc-main .kc-scene')?.textContent.includes('집'));await saved();
 
 // A failed completion must not persist partial wardrobes or overwrite an existing profile.
@@ -169,6 +169,21 @@ await lastMemo.screenshot({path:path.join(root,'test-results/inline-dark.png')})
 await page.setViewportSize({width:320,height:780});assert.equal(await lastMemo.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
 await page.evaluate(()=>{document.documentElement.style.setProperty('--SmartThemeBodyColor','#383240');document.querySelector('#chat').style.pointerEvents='none';});
 await page.locator('#send_textarea').evaluate(node=>node.style.visibility='visible');assert.equal(await page.evaluate(()=>TEST_CONTEXT.chat.at(-1).mes),originalStory);assert.equal(await page.evaluate(()=>calls.length),beforeInline);
+// Header actions remain usable when folded and never change the story or duplicate a pending read.
+await page.evaluate(()=>document.querySelector('#chat').style.pointerEvents='auto');
+assert.equal(await lastMemo.locator('.kc-inline-head [data-kc-action]').count(),2);
+await lastMemo.locator('.kc-inline-toggle').click();await saved();assert.equal(await lastMemo.locator('.kc-inline-body').isVisible(),false);
+const quickInlineBefore=await page.evaluate(()=>calls.length);
+await page.evaluate(()=>{window.nextScene={changes:{}};window.modelWait=true;window.releaseModel=null;});
+await lastMemo.locator('[data-kc-action="read"]').click();await page.waitForFunction(()=>!!window.releaseModel);
+assert.equal(await lastMemo.locator('[data-kc-action="read"]').isDisabled(),true);assert.equal(await lastMemo.locator('.kc-inline-body').isVisible(),false);
+await lastMemo.locator('[data-kc-action="read"]').dispatchEvent('click');assert.equal(await page.evaluate(()=>calls.length),quickInlineBefore+1);
+await page.evaluate(()=>{window.modelWait=false;const release=window.releaseModel;window.releaseModel=null;release();});
+await page.locator('.kc-toast').waitFor({state:'detached'});await saved();assert.equal(await lastMemo.locator('.kc-inline-body').isVisible(),false);
+await lastMemo.locator('[data-kc-action="open"]').click();assert.equal(await page.locator('#kikki-closet-dialog').isVisible(),true);
+await page.locator('[data-action="close"]').click();await lastMemo.locator('.kc-inline-toggle').click();await saved();
+assert.equal(await page.evaluate(()=>TEST_CONTEXT.chat.at(-1).mes),originalStory);await page.evaluate(()=>document.querySelector('#chat').style.pointerEvents='none');
+
 // Bounded records: unchanged replies still get a memo; reload restores only recent N without a model call.
 await page.locator('.kc-open').click();await page.locator('[data-action="settings"]').click();
 assert.equal(await page.locator('[name="displayLimit"]').inputValue(),'1');
@@ -193,6 +208,18 @@ await page.locator('[name="displayLimit"]').fill('1');await page.locator('[name=
 assert.equal(await page.evaluate(()=>calls.length),beforeRetention);await page.locator('[data-action="close"]').click();
 await page.locator('.kc-open').click();await page.locator('[data-action="settings"]').click();await page.locator('[name="displayMode"]').selectOption('floating');await saved();await page.locator('[data-action="sub-close"]').click();
 await page.locator('.kc-inline-card').waitFor({state:'detached'});assert.equal(await page.locator('.kc-mascot').isVisible(),true);await page.setViewportSize({width:360,height:780});
+
+// Floating header uses the same manual reader and opens the main UI without extra generation.
+await page.locator('[data-action="close"]').click();await page.locator('.kc-mascot').click();
+assert.equal(await page.locator('.kc-bubble header .kc-quick-tools button').count(),2);
+const quickFloatBefore=await page.evaluate(()=>calls.length);await page.evaluate(()=>{window.modelWait=true;window.releaseModel=null;window.nextScene={changes:{}};});
+await page.locator('[data-action="mini-read"]').click();await page.waitForFunction(()=>!!window.releaseModel);
+assert.equal(await page.locator('[data-action="mini-read"]').isDisabled(),true);await page.locator('[data-action="mini-read"]').dispatchEvent('click');assert.equal(await page.evaluate(()=>calls.length),quickFloatBefore+1);
+await page.evaluate(()=>{window.modelWait=false;const release=window.releaseModel;window.releaseModel=null;release();});await page.locator('.kc-toast').waitFor({state:'detached'});await saved();
+assert.equal(await page.locator('.kc-bubble').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);await page.screenshot({path:path.join(root,'test-results/quick-floating.png')});
+await page.locator('[data-action="mini-open"]').click();assert.equal(await page.locator('.kc-bubble[open]').count(),0);assert.equal(await page.locator('#kikki-closet-dialog').isVisible(),true);
+await page.locator('[data-action="tab-options"]').click();await page.locator('[name="newItems"]').selectOption('low');await saved();assert.equal(stored().data.settings.newItems,'low');
+await page.locator('[name="newItems"]').selectOption('medium');await saved();await page.locator('[data-action="tab-actual"]').click();
 
 // Rebuild replaces only the active person/category from saved preferences, without changing worn clothes.
 await page.locator('[data-action="edit"]').click();await page.waitForFunction(()=>document.querySelector('.kc-wardrobe-name')?.textContent.includes('남색'));await saved();

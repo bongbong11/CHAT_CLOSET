@@ -5,7 +5,7 @@ import {needsOutfitRead} from '../scene-gate.js';
 import {registerOutfitMacro,injectPayload} from '../host.js';
 import {requireEnglishProfile,toModelData} from '../model-schema.js';
 import {normalizeContext,normalizeSceneResponse,patchContext,validateSceneFacts,resolveOutfit,sceneRequest} from '../outfit-rules.js';
-import {itemTraits} from '../wardrobe.js';
+import {itemTraits,underwearSlot,newItemPolicy} from '../wardrobe.js';
 
 const memory=()=>{const map=new Map();return {getItem:key=>map.get(key)||null,setItem:(key,value)=>map.set(key,value),removeItem:key=>map.delete(key)};};
 const message=(id,content='He smiles.',swipe=0)=>({id:String(id),content,role:'character',swipe});
@@ -338,4 +338,122 @@ test('해제 항목은 context 내부나 인물 바로 아래에 와도 해석�
   const packet=normalizeSceneResponse({changes:{persona:part}}),state=home();state.people.persona.context=normalizeContext({conditions:['Pregnant','Inpatient treatment','Leg injury']});
   const result=resolveOutfit(state,packet.facts,owned);assert.deepEqual(result.state.people.persona.context.conditions,['Pregnant','Leg injury']);
  }
+});
+
+
+test('새 옷 추가의 옛 선택값은 삭제하지 않고 서버 설정으로 복원한다',()=>{
+ for(const [value,expected] of [['적게','low'],['보통','medium'],['많이','high'],['off','off'],[false,'off']]){
+  const storage=memory();storage.setItem(KEY,JSON.stringify({version:1,settings:{newItems:value},characters:{}}));
+  const store=new Store(storage);assert.equal(store.data.settings.newItems,expected);store.save();assert.equal(new Store(storage).data.settings.newItems,expected);
+ }
+ assert.equal(newItemPolicy(undefined),'medium');
+});
+test('한글 레거시 브라·양말은 팬티가 아니고 상충하는 슬롯 태그도 믿지 않는다',()=>{
+ assert.equal(underwearSlot({category:'속옷',name:'심리스 몰드컵 와이어리스 브라',traits:{slot:'briefs'}}),'bra');
+ assert.equal(underwearSlot({category:'속옷',name:'흰색 양말'}),'socks');assert.equal(underwearSlot({category:'속옷',name:'속셔츠'}),'undershirt');
+ assert.equal(underwearSlot({category:'속옷',name:'면 팬티'}),'briefs');
+ assert.ok(itemTraits({category:'하의',name:'슬림 테일러드 울 슬랙스'}).use.includes('formal'));
+ assert.ok(itemTraits({category:'하의',name:'허리 밴딩 조거 팬츠'}).fit.includes('adjustable'));
+});
+const legacyPersona=()=>{
+ const state=emptyState();state.people.persona.context=normalizeContext({location:'home',space:'private',phase:'resting',conditions:['pregnant'],season:'autumn',temperature:16});
+ state.people.persona.items=[{id:'old-shirt',category:'상의',name:'버튼다운 코튼 팝린 셔츠',brand:'',source:'추정 보유'},
+ {id:'old-slacks',category:'하의',name:'슬림 테일러드 울 슬랙스',brand:'',source:'추정 보유'},
+ {id:'old-bra',category:'속옷',name:'심리스 와이어리스 브라',brand:'UNIQLO',source:'추정 보유'}];return state;
+};
+const lounge={id:'lounge',category:'하의',name:'drawstring lounge trousers',brand:'UNIQLO',labelKo:'밴딩 라운지 바지',brandKo:'유니클로',traits:{use:['home'],fit:['adjustable']}};
+test('변화 없는 정상 응답에서도 기존 추정 착장을 보정하고 적합한 옷과 임신 상태는 유지한다',()=>{
+ const baseline=legacyPersona(),before=structuredClone(baseline),stock={character:[],persona:[...baseline.people.persona.items,lounge,{...briefs,id:'p-briefs'}]};
+ const result=resolveOutfit(baseline,{changes:{}},stock);
+ assert.deepEqual(result.state.people.persona.items.map(i=>i.id),['old-shirt','old-bra','lounge','p-briefs']);
+ assert.deepEqual(result.missing,[]);assert.deepEqual(result.state.people.persona.context.conditions,['pregnant']);assert.deepEqual(baseline,before);
+ const same=resolveOutfit(result.state,{changes:{}},stock);assert.deepEqual(same.state,result.state);assert.ok(same.decisions.some(d=>d.reason==='already_checked'));
+ assert.doesNotMatch(outfitInjection(result.state),/origins|matchKey|pregnant|requirements|home_use/);
+});
+test('낮은 생성 설정도 보유한 적합한 대체품은 사용하고 중간부터 용도에 맞는 새 품목을 요청한다',()=>{
+ for(const policy of ['off','low','medium','high']){
+  const state=legacyPersona();state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
+  const result=resolveOutfit(state,{changes:{}},stock,{}, {},{newItems:policy});
+  assert.equal(result.missing.length,['medium','high'].includes(policy)?1:0);
+  if(result.missing.length){assert.equal(result.missing[0].cause,'home_use');assert.deepEqual(result.missing[0].requirements,{use:['home','casual']});}
+  else assert.ok(result.decisions.some(d=>d.action==='generation_skipped'));
+  assert.ok(resolveOutfit(state,{changes:{}},{character:[],persona:[...stock.persona,lounge]}, {}, {},{newItems:policy}).state.people.persona.items.some(i=>i.id==='lounge'));
+ }
+});
+test('생성 끄기는 자동 생성만 막고 이야기에서 실제 입은 새 옷의 기록은 허용한다',()=>{
+ const state=home(),stock={character:[shirt,pants,briefs],persona:[]},packet=facts({location:'outside',space:'public',phase:'outdoors'});
+ assert.equal(resolveOutfit(state,packet,stock,{}, {},{newItems:'off'}).missing.length,0);
+ assert.equal(resolveOutfit(state,packet,stock,{}, {},{newItems:'low'}).missing[0].category,'신발');
+ const explicit=validateSceneFacts({changes:{character:{actions:[{op:'wear',category:'겉옷',name:'raincoat'}]}}});
+ assert.equal(resolveOutfit(state,explicit,stock,{}, {},{newItems:'off'}).missing[0].reason,'explicit');
+});
+test('일반 임신과 핏 미확인만으로 압박 금지나 새 의상을 만들지 않는다',()=>{
+ const state=home();state.people.character.context.conditions=['pregnant'];
+ const result=resolveOutfit(state,{changes:{}},owned);assert.deepEqual(ids(result.state),ids(state));assert.deepEqual(result.missing,[]);assert.deepEqual(result.state.people.character.context.needs,[]);
+});
+test('저장된 신체 제약은 변화 없는 응답에서도 반영하며 허리 제약으로 브라나 양말을 교체하지 않는다',()=>{
+ const state=home(),tight={...pants,id:'tight',name:'slim rigid trousers'};state.people.character.items=[shirt,tight,briefs,{id:'bra',category:'속옷',name:'slim bra'},{id:'sock',category:'속옷',name:'compression socks'}];state.people.character.context.needs=['Avoid waist pressure'];
+ const result=resolveOutfit(state,{changes:{}},{character:state.people.character.items,persona:[]},{},{},{newItems:'low'});
+ assert.equal(result.missing.length,1);assert.equal(result.missing[0].category,'하의');assert.deepEqual(result.missing[0].requirements.fit,['loose','adjustable','maternity']);
+});
+test('명시된 옷과 수동 착장은 보정으로 덮지 않으며 실제 새 이동 이후에만 다시 비교한다',()=>{
+ const state=legacyPersona();state.people.persona.origins={'old-slacks':'explicit'};state.people.persona.items.push({...briefs,id:'p-briefs'});
+ const stock={character:[],persona:[...state.people.persona.items,lounge]};
+ const kept=resolveOutfit(state,{changes:{}},stock);assert.ok(kept.state.people.persona.items.some(i=>i.id==='old-slacks'));
+ const room=resolveOutfit(kept.state,validateSceneFacts({changes:{persona:{transition:true}}}),stock);assert.ok(room.state.people.persona.items.some(i=>i.id==='old-slacks'));
+ const arrived=structuredClone(kept.state);arrived.people.persona.context=normalizeContext({location:'outside',space:'public',phase:'outdoors'});
+ const moved=resolveOutfit(arrived,validateSceneFacts({changes:{persona:{transition:true,context:{location:'home',space:'private',phase:'resting'}}}}),stock);assert.ok(moved.state.people.persona.items.some(i=>i.id==='lounge'));
+ const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.current=state;b.profiles.persona={wardrobe:stock.persona};
+ saveManualOutfit(b,state.people,[message(1)],'chat');assert.equal(b.current.people.persona.origins['old-slacks'],'manual');assert.equal(b.current.people.persona.manualOutfit,true);
+ assert.ok(resolveOutfit(b.current,{changes:{}},stock).state.people.persona.items.some(i=>i.id==='old-slacks'));
+});
+test('새 옷 허용값 변경은 재평가하되 같은 장면을 매번 새로 채우지 않는다',()=>{
+ const state=legacyPersona();state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
+ const off=resolveOutfit(state,{changes:{}},stock,{}, {},{newItems:'off'});
+ const same=resolveOutfit(off.state,{changes:{}},stock,{}, {},{newItems:'off'});assert.deepEqual(same.missing,[]);assert.deepEqual(same.state,off.state);
+ assert.equal(resolveOutfit(off.state,{changes:{}},stock,{}, {},{newItems:'medium'}).missing.length,1);
+});
+test('많이 설정도 실제 비가 오는 외출에만 방수 기능을 보충한다',()=>{
+ const state=home();state.people.character.items.push(shoes);state.people.character.context=normalizeContext({location:'outside',space:'public',phase:'outdoors',weather:'rain',temperature:18});
+ const high=resolveOutfit(state,{changes:{}},owned,{}, {},{newItems:'high'});assert.equal(high.missing[0].reason,'rain_protection');
+ assert.deepEqual(resolveOutfit(state,{changes:{}},owned,{}, {},{newItems:'medium'}).missing,[]);
+ const clear=structuredClone(state);clear.people.character.context.weather='mild';assert.deepEqual(resolveOutfit(clear,{changes:{}},owned,{}, {},{newItems:'high'}).missing,[]);
+});
+test('가능한 기존 겉옷의 여밈 조절은 신체 제약에 맞춰 같은 ID로 처리한다',()=>{
+ const state=home(),jacket={id:'jacket',category:'겉옷',name:'button-front jacket',wearing:'fully buttoned'};state.people.character.items.push(jacket);state.people.character.context.needs=['Avoid abdominal pressure'];
+ const result=resolveOutfit(state,{changes:{}},{character:[...owned.character,jacket],persona:[]});assert.equal(result.state.people.character.items.find(i=>i.id==='jacket').wearing,'worn open');assert.deepEqual(result.missing,[]);
+});
+test('부족한 홈웨어와 팬티만 생성하며 저장 재진입과 다음 판독에서 재사용한다',async()=>{
+ const storage=memory(),store=new Store(storage);store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=legacyPersona();b.current=structuredClone(b.base);b.profiles.persona={fields:{'스타일':{value:'Restrained casual clothing'}},wardrobe:structuredClone(b.base.people.persona.items)};
+ let count=0,seen;const generate=async request=>{count++;seen=request;return {newItems:{persona:[lounge,{...briefs,labelKo:'검정 팬티',brandKo:'유니클로'}]}};};
+ const engine=new Engine(store,async()=>({changes:{}}),generate);await engine.read('c',bid,[message(1)],{force:true});
+ assert.equal(count,1);assert.equal(seen.missing.length,2);assert.ok(seen.missing.some(n=>n.slot==='briefs'));assert.ok(seen.missing.some(n=>n.cause==='home_use'));assert.equal(b.extra.persona.length,2);
+ assert.ok(b.current.people.persona.items.some(i=>i.name==='drawstring lounge trousers'));assert.equal(underwearSlot(b.current.people.persona.items.find(i=>i.name==='briefs')),'briefs');
+ await engine.read('c',bid,[message(1),message(2)],{force:true});assert.equal(count,1);
+ const restored=new Store(storage),next=new Engine(restored,async()=>({changes:{}}),generate);await next.read('c',bid,[message(1),message(2),message(3)],{force:true});assert.equal(count,1);assert.equal(restored.branch('c',bid).extra.persona.length,2);
+ assert.deepEqual(b.current.people.character.context.conditions,[]);assert.deepEqual(Object.keys(store.data.characters),['c']);
+});
+test('생성이 다른 속옷 슬롯을 돌려주면 저장을 부분 변경하지 않는다',async()=>{
+ const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=home();b.base.people.character.items=b.base.people.character.items.filter(i=>i.id!=='briefs');b.current=structuredClone(b.base);b.profiles.character={wardrobe:[shirt,pants,shoes]};
+ const before=structuredClone(b),engine=new Engine(store,async()=>({changes:{character:{context:{location:'outside',space:'public',phase:'outdoors'}}}}),async()=>({newItems:{character:[{id:'wrong',category:'속옷',name:'bra',brand:'UNIQLO',labelKo:'브라',brandKo:'유니클로',traits:{slot:'briefs'}}]}}));
+ await assert.rejects(engine.read('c',bid,[message(1)]),/종류·용도·핏/);assert.deepEqual(b,before);
+});
+
+
+test('옷장에 적합한 품목이 추가되면 같은 상황도 다시 비교하고 불필요한 생성은 하지 않는다',()=>{
+ const state=legacyPersona();state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
+ const checked=resolveOutfit(state,{changes:{}},stock,{}, {},{newItems:'off'});
+ const updated=resolveOutfit(checked.state,{changes:{}},{character:[],persona:[...stock.persona,lounge]}, {}, {},{newItems:'off'});
+ assert.ok(updated.state.people.persona.items.some(i=>i.id==='lounge'));assert.deepEqual(updated.missing,[]);
+});
+test('기존 추운 외출 상태는 얇은 겉옷을 억지로 고르지 않고 필요한 보온 기능을 요청한다',()=>{
+ const state=home();state.people.character.items.push(shoes);state.people.character.context=normalizeContext({location:'outside',space:'public',phase:'outdoors',temperature:3});
+ const thin={id:'thin',category:'겉옷',name:'linen blazer',traits:{climate:['hot']}};
+ const result=resolveOutfit(state,{changes:{}},{character:[...owned.character,thin],persona:[]});assert.equal(result.missing[0].reason,'cold');assert.deepEqual(result.missing[0].requirements,{climate:['cold']});
+ const coat={id:'warm',category:'겉옷',name:'wool coat'};assert.ok(ids(resolveOutfit(state,{changes:{}},{character:[...owned.character,thin,coat],persona:[]}).state).includes('warm'));
+ state.people.character.items.push(thin);const replace=resolveOutfit(state,{changes:{}},{character:[...owned.character,thin,coat],persona:[]});assert.ok(ids(replace.state).includes('warm'));assert.ok(!ids(replace.state).includes('thin'));
+});
+test('매칭 확인용 내부 값만 추가된 턴은 착장 변경 이력으로 쌓지 않는다',async()=>{
+ const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=home();b.current=home();b.profiles.character={wardrobe:owned.character};
+ const engine=new Engine(store,async()=>({changes:{}}));await engine.read('c',bid,[message(1)],{force:true});assert.equal(b.history.length,0);assert.ok(b.current.people.character.matchKey);
 });

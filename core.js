@@ -1,13 +1,13 @@
 import {needsOutfitRead} from './scene-gate.js';
-import {wardrobeLevel,ownedItems,normalizeTraits,itemTraits} from './wardrobe.js';
-import {ensureContexts,normalizeSceneResponse,resolveOutfit,sceneRequest} from './outfit-rules.js';
+import {wardrobeLevel,ownedItems,normalizeTraits,itemTraits,newItemPolicy} from './wardrobe.js';
+import {ensureContexts,normalizeSceneResponse,resolveOutfit,sceneRequest,satisfiesRequest} from './outfit-rules.js';
 
 export const KEY = 'kikki-closet:v1';
 export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'];
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
-export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
+export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.3';
+export const EXTENSION_VERSION='1.6.4';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -170,6 +170,7 @@ export function restoreBranchForMessages(branch,messages,chatId){
 export function saveManualOutfit(branch,people,messages,chatId,limit=1){
  const next=ensureContexts({...clone(branch.current),people:clone(people)});
  validateState(next,Object.fromEntries(['character','persona'].map(who=>[who,ownedItems(branch,who)])));
+ for(const person of Object.values(next.people)){person.origins=Object.fromEntries(person.items.map(item=>[item.id,'manual']));person.manualOutfit=true;}
  branch.outfitMemory=updateOutfitMemory(branch.outfitMemory,branch.current,next);branch.current=next;
  branch.keys=prefixKeys(messages);const last=branch.keys.at(-1);
  if(last){
@@ -284,7 +285,8 @@ export class Store {
    d.settings={...DEFAULTS,...d.settings,wardrobeLevel:wardrobeLevel(d.settings)};
    d.settings.displayLimit=displayLimit(d.settings.displayLimit);
    if(!['floating','inline'].includes(d.settings.displayMode))d.settings.displayMode='floating';
-   for(const key of ['wardrobeSize','wardrobeLevels','worlds','target','newItems','variety','detail'])delete d.settings[key];
+   d.settings.newItems=newItemPolicy(d.settings.newItems);
+   for(const key of ['wardrobeSize','wardrobeLevels','worlds','target','variety','detail'])delete d.settings[key];
    for(const character of Object.values(d.characters))for(const branch of Object.values(character.branches||{})){
     for(const state of [branch.base,branch.current,...(branch.history||[])])ensureContexts(state);
     for(const cp of Object.values(branch.checkpoints||{})){ensureContexts(cp.state);for(const state of cp.history||[])ensureContexts(state);}
@@ -361,38 +363,42 @@ export class Engine {
    }
    this.attempts.delete(attemptKey);if(trace)trace.decision=parsed.outcome;
    const facts=parsed.facts,wardrobes=Object.fromEntries(['character','persona'].map(w=>[w,ownedItems({...b,extra,current:baseline},w)]));
-   let resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles);
+   const matching={newItems:newItemPolicy(this.store.data.settings.newItems)};
+   let resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles,matching);
    trace?.event('physical-state','신체 상태 추가·유지·해제',Object.fromEntries(['character','persona'].map(who=>{
     const previous=baseline.people[who].context,next=resolved.state.people[who].context;
     const key=value=>String(value).trim().toLowerCase().replace(/[.!]+$/,'');
     const added=(old,values)=>values.filter(value=>!old.some(item=>key(item)===key(value)));
     return [who,{retainedConditions:next.conditions.filter(value=>previous.conditions.some(item=>key(item)===key(value))),addedConditions:added(previous.conditions,next.conditions),resolvedConditions:added(next.conditions,previous.conditions),retainedNeeds:next.needs.filter(value=>previous.needs.some(item=>key(item)===key(value))),addedNeeds:added(previous.needs,next.needs),resolvedNeeds:added(next.needs,previous.needs)}];
    })));
-   trace?.event('decision','필요한 착장 변경 계산',{before:baseline.people,after:resolved.state.people,missing:resolved.missing});
+   trace?.event('decision','필요한 착장 변경 계산',{policy:matching.newItems,before:baseline.people,after:resolved.state.people,missing:resolved.missing,decisions:resolved.decisions});
    if(resolved.missing.length){
     if(!this.generate)throw Error('필요한 옷이 옷장에 없습니다. 기존 착장은 유지됩니다.');
-    const profiles=Object.fromEntries([...new Set(resolved.missing.map(n=>n.who))].map(who=>[who,{fields:Object.fromEntries(Object.entries(b.profiles[who]?.fields||{}).filter(([name])=>['나이대','직업','생활수준','세계관','복식 규칙','배경·복식 문화','브랜드 성향','스타일','색상','고정 조건'].includes(name)).map(([name,field])=>[name,{value:text(field.value,160)}]))}]));
-    const generated=await this.generate({missing:resolved.missing,profiles,contexts:Object.fromEntries(Object.keys(profiles).map(who=>[who,resolved.state.people[who].context]))},signal,profileId,trace);
+    const profiles=Object.fromEntries([...new Set(resolved.missing.map(n=>n.who))].map(who=>[who,{fields:Object.fromEntries(Object.entries(b.profiles[who]?.fields||{}).filter(([name])=>PROFILE_FIELDS.includes(name)).map(([name,field])=>[name,{value:text(field.value,160)}])),wardrobeHints:b.profiles[who]?.wardrobeHints||{}}]));
+    const generated=await this.generate({missing:resolved.missing,creationPolicy:matching.newItems,profiles,contexts:Object.fromEntries(Object.keys(profiles).map(who=>[who,resolved.state.people[who].context]))},signal,profileId,trace);
     if(!valid()){trace?.finish('cancelled','취소된 의상 생성 결과 폐기');return null;}
-    if(!generated||typeof generated!=='object'||!generated.newItems||Object.keys(generated).some(k=>k!=='newItems')||Object.keys(generated.newItems).some(k=>!['character','persona'].includes(k)))throw Error('필요한 의상 생성 형식이 맞지 않습니다. 기존 착장은 유지됩니다.');
+    if(!generated||typeof generated!=='object'||!generated.newItems||typeof generated.newItems!=='object'||Array.isArray(generated.newItems))throw Error('필요한 의상 생성 형식이 맞지 않습니다. 기존 착장은 유지됩니다.');
     for(const who of ['character','persona']){
      const items=generated.newItems[who]||[],needs=resolved.missing.filter(n=>n.who===who);
      if(!Array.isArray(items)||items.length>needs.length)throw Error('요청하지 않은 의상이 포함됐습니다. 기존 착장은 유지됩니다.');
      const remaining=[...needs];
      for(const value of items){
-      const item=normalizeItem(value),n=remaining.findIndex(need=>need.category===item.category);
-      if(n<0||!item.available)throw Error('요청한 의상 종류가 일치하지 않습니다. 기존 착장은 유지됩니다.');remaining.splice(n,1);
+      const item=normalizeItem(value),n=remaining.findIndex(need=>satisfiesRequest(item,need,resolved.state.people[who].context));
+      if(n<0||!item.available)throw Error('생성된 의상이 요청한 종류·용도·핏을 충족하지 못했습니다. 기존 착장은 유지됩니다.');remaining.splice(n,1);
       if(!koreanDisplay(item.labelKo)||!koreanDisplay(item.brandKo))throw Error('생성된 의상의 한글 표시명이 누락됐습니다. 기존 데이터는 유지됩니다.');
       item.id='scene-'+branchId();added[who].push(item);wardrobes[who].push(item);
      }
     }
-    resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles);
+    resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles,matching);
+    trace?.event('matching','생성 의상 매칭 확인',{added:Object.fromEntries(Object.entries(added).map(([who,items])=>[who,items.map(({id,category,name})=>({id,category,name}))])),decisions:resolved.decisions,remaining:resolved.missing});
     if(resolved.missing.length)throw Error('생성된 옷이 현재 조건을 충족하지 못했습니다. 기존 착장은 유지됩니다.');
    }
    if(!valid()){trace?.finish('cancelled','취소된 판독 결과 폐기');return null;}
    state=validateState(resolved.state,wardrobes);
   }
-  const changed=JSON.stringify(state)!==JSON.stringify(baseline);
+  const meaningful=value=>JSON.stringify({scene:value.scene,sceneKo:value.sceneKo,people:Object.fromEntries(['character','persona'].map(who=>[who,{nude:value.people[who].nude,items:value.people[who].items,context:value.people[who].context}]))});
+  const changed=meaningful(state)!==meaningful(baseline);
+  if(trace&&changed&&trace.decision!=='partial')trace.decision='applied';
   const nextMemory=updateOutfitMemory(memory,baseline,state);
   for(const who of ['character','persona']){const merged=new Map(extra[who].map(i=>[i.id,i]));for(const item of added[who])merged.set(item.id,item);extra[who]=[...merged.values()];}
   if(changed){history.push(clone(baseline));history=history.slice(-5);const outfit=outfitText(state);if(outfit&&outfits.at(-1)!==outfit)outfits.push(outfit);outfits=outfits.slice(-10);}

@@ -7,7 +7,7 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.6';
+export const EXTENSION_VERSION='1.6.7';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -170,6 +170,13 @@ export function recentTurnStart(messages,turns=8){
  const limit=Math.max(1,Math.min(50,Math.floor(Number(turns)||8)));
  let count=0;for(let i=messages.length-1;i>=0;i--)if(messages[i].role==='user'&&++count===limit)return i;
  return count?0:Math.max(0,messages.length-limit);
+}
+function sceneReadWindow(messages,start,turns,reread){
+ const windowStart=recentTurnStart(messages,turns);
+ const evidenceStart=reread?Math.max(windowStart,messages.findLastIndex(message=>message.role==='character')):Math.max(start,windowStart);
+ // Keep every unprocessed message within the configured window. Only already-read background shrinks.
+ const contextStart=!reread&&start>0?Math.max(windowStart,recentTurnStart(messages.slice(0,evidenceStart),1)):windowStart;
+ return {windowStart,evidenceStart,contextStart,mode:reread?'manual':start>0?'incremental':'full'};
 }
 export function missingBrand(brand){return !String(brand||'').trim()||/^(?:unknown|brand unknown|unknown brand|unbranded|무브랜드|브랜드 미상|불명)$/i.test(String(brand).trim());}
 export function savedOutfitForMessages(branch,messages,chatId){
@@ -370,11 +377,10 @@ export class Engine {
   if(needsRead){
    this.controller=new AbortController();const signal=this.controller.signal;
    const valid=()=>!signal.aborted&&serial===this.serial&&epoch===this.store.epoch&&this.store.branch(id,bid)===b&&isCurrent();
-   const windowStart=recentTurnStart(messages,this.store.data.settings.chatTurns);
-   const evidenceStart=force?Math.max(windowStart,messages.findLastIndex(message=>message.role==='character')):Math.max(start,windowStart);
-   const request=sceneRequest(baseline,messages.slice(evidenceStart),messages.slice(windowStart,evidenceStart),names);
+   const {windowStart,evidenceStart,contextStart,mode}=sceneReadWindow(messages,start,this.store.data.settings.chatTurns,force);
+   const request=sceneRequest(baseline,messages.slice(evidenceStart),messages.slice(contextStart,evidenceStart),names);
    if(force)request.reread=true;
-   trace?.event('context','현재 상황 판독 범위',{reread:force,evidenceStart,latestEvidence:request.messages.map(({id,role,swipe,content})=>({id,role,swipe,characters:content.length,hasInfoBlock:/<[^>]*(?:info|status)|(?:location|loc|장소|위치)\s*[:：]/i.test(content)})),backgroundMessages:request.contextMessages.length});
+   trace?.event('context','현재 상황 판독 범위',{mode,reread:force,maxTurns:this.store.data.settings.chatTurns,windowStart,contextStart,evidenceStart,latestEvidence:request.messages.map(({id,role,swipe,content})=>({id,role,swipe,characters:content.length,hasInfoBlock:/<[^>]*(?:info|status)|(?:location|loc|장소|위치)\s*[:：]/i.test(content)})),newMessages:request.messages.length,newCharacters:request.messages.reduce((sum,message)=>sum+message.content.length,0),backgroundMessages:request.contextMessages.length,backgroundCharacters:request.contextMessages.reduce((sum,message)=>sum+message.content.length,0),omittedProcessedMessages:contextStart-windowStart});
    if(windowStart>start)request.omittedEarlierMessages=windowStart-start;
    onRequest();
    let raw;try{raw=await this.request(system,request,signal,profileId,trace);}catch(error){if(error.kind==='connection'){this.attempts.set(attemptKey,error.message);while(this.attempts.size>30)this.attempts.delete(this.attempts.keys().next().value);}throw error;}if(!valid()){trace?.finish('cancelled','변경된 채팅의 늦은 응답 폐기');return null;}

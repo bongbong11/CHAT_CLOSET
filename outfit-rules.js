@@ -159,7 +159,13 @@ export function patchContext(previous,patch={}){
  return next;
 }
 
-function tokens(value){return short(value,200).toLowerCase().replace(/\b(?:pants|slacks)\b/g,'trousers').replace(/\b(?:sneaker|trainer)s?\b/g,'sneakers').replace(/\b(?:underpants|underwear|panties)\b/g,'briefs').split(/[^a-z0-9]+/).filter(Boolean);}
+const TOKEN_ALIASES={heels:'heel',heel:'heel',pumps:'pump',pump:'pump',boots:'boot',boot:'boot',loafers:'loafer',loafer:'loafer',sandals:'sandal',sandal:'sandal',flats:'flat',flat:'flat',dresses:'dress',shirts:'shirt',shirt:'shirt',jackets:'jacket',jacket:'jacket',coats:'coat',coat:'coat',skirts:'skirt',skirt:'skirt'};
+function tokens(value){return short(value,200).toLowerCase()
+ .replace(/\b(?:pants|slacks)\b/g,'trousers')
+ .replace(/\b(?:sneaker|trainer)s?\b/g,'sneakers')
+ .replace(/\b(?:underpants|underwear|panties)\b/g,'briefs')
+ .replace(/\b(heels?|pumps?|boots?|loafers?|sandals?|flats?|dresses|shirts?|jackets?|coats?|skirts?)\b/g,word=>TOKEN_ALIASES[word]||word)
+ .split(/[^a-z0-9]+/).filter(Boolean);}
 function sameGarment(item,action){
  if(item.category!==action.category)return false;
  for(const key of ['color','brand'])if(action[key]&&short(item[key]).toLowerCase()!==action[key].toLowerCase())return false;
@@ -238,7 +244,10 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},opt
   const need=(category,reason,extra={})=>{
    const level=extra.level||1,{level:_,...details}=extra;
    if(reason!=='explicit'&&(policy==='off'||({low:1,medium:2,high:3}[policy]||2)<level)){decision('generation_skipped',{category,reason,policy,requirements:details.requirements});return;}
-   if(!missing.some(item=>item.who===who&&item.category===category&&item.slot===details.slot&&item.reason===reason&&item.name===details.name)){missing.push({who,category,reason,...details});decision('generation_requested',{category,reason,...details});}
+   if(!missing.some(item=>item.who===who&&item.category===category&&item.slot===details.slot&&item.reason===reason&&item.name===details.name)){
+    const requestId=who+'-'+(missing.filter(item=>item.who===who).length+1);
+    missing.push({requestId,who,category,reason,...details});decision('generation_requested',{requestId,category,reason,...details});
+   }
   };
   const wear=(item,{layer=false,wearing,wearingKo}={})=>{
    const current=person.items.find(value=>value.id===item.id);
@@ -268,7 +277,7 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},opt
   const publicPlace=context.space==='public'||['outside','work','school'].includes(context.location);
   const completed=publicPlace&&['outdoors','working','formal'].includes(context.phase);
   const publicTransition=completed&&(change.transition||relevant&&(['location','space','phase'].some(key=>before[key]!==context[key])||before.exception!==context.exception&&!context.exception));
-  const sceneTransition=publicTransition||!!(change.transition&&before.location!==context.location);
+  const sceneTransition=publicTransition||!!(change.transition&&['location','space','phase','purpose'].some(key=>before[key]!==context[key]));
   const privatePhase=['washing','after_washing','sleeping'].includes(context.phase);
   const bootstrap=before.location==='unknown'&&context.location!=='unknown'&&context.phase!=='care'&&!person.nude&&!person.items.some(item=>['upper','lower','full'].includes(itemTraits(item).coverage))&&owned.some(item=>['upper','full'].includes(itemTraits(item).coverage)&&!itemTraits(item).temporary);
   if(context.phase==='washing'&&before.phase!=='washing'&&context.exception!=='keep'&&!protectedIds.size&&!missing.some(item=>item.who===who&&item.reason==='explicit')){person.items=[];person.nude=true;continue;}
@@ -276,7 +285,7 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},opt
   if(person.manualOutfit&&!sceneTransition){decision('kept',{reason:'manual_outfit'});continue;}
   if(sceneTransition)delete person.manualOutfit;
   const assessment=matchKey(person,policy,exceptions,owned);
-  if(!relevant&&!sceneTransition&&person.matchKey===assessment){decision('kept',{reason:'already_checked'});continue;}
+  if(!relevant&&!change.transition&&!sceneTransition&&person.matchKey===assessment){decision('kept',{reason:'already_checked'});continue;}
   // Change existing pieces only when a newly established requirement makes them unsuitable.
   for(const current of [...person.items]){
    if(current.category==='겉옷'&&itemTraits(current).fit.includes('front_opening')&&/waist|abdom|belly/.test(clothingNeeds(context))&&/\b(?:buttoned|fastened|zipped)\b/.test(current.wearing||'')&&!protectedIds.has(current.id)&&!['explicit','manual'].includes(person.origins[current.id])){

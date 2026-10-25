@@ -4,7 +4,7 @@ import {Store,Engine,KEY,emptyState,recordDisplay,savedDisplay,pruneDisplayChat,
 import {needsOutfitRead} from '../scene-gate.js';
 import {registerOutfitMacro,injectPayload} from '../host.js';
 import {requireEnglishProfile,toModelData} from '../model-schema.js';
-import {normalizeContext,normalizeSceneResponse,patchContext,validateSceneFacts,resolveOutfit,sceneRequest} from '../outfit-rules.js';
+import {normalizeContext,normalizeSceneResponse,patchContext,validateSceneFacts,resolveOutfit,sceneRequest,satisfiesRequest} from '../outfit-rules.js';
 import {itemTraits,underwearSlot,newItemPolicy} from '../wardrobe.js';
 
 const memory=()=>{const map=new Map();return {getItem:key=>map.get(key)||null,setItem:(key,value)=>map.set(key,value),removeItem:key=>map.delete(key)};};
@@ -91,9 +91,16 @@ test('실제 목욕만 탈의하고 계절/기온은 필요한 겉옷만 조정�
  const warm=resolveOutfit(cold.state,facts({temperature:28}),owned);assert.ok(!ids(warm.state).includes('coat'));assert.ok(ids(warm.state).includes('top'));
 });
 test('부족한 범주만 요청하고 잘못된 사실·코디 전체 응답은 거절한다',()=>{
- const result=resolveOutfit(home(),facts({location:'outside',space:'public',phase:'outdoors'}),{character:[shirt,pants,briefs],persona:[]});assert.deepEqual(result.missing,[{who:'character',category:'신발',reason:'public_coverage'}]);
+ const result=resolveOutfit(home(),facts({location:'outside',space:'public',phase:'outdoors'}),{character:[shirt,pants,briefs],persona:[]});assert.deepEqual(result.missing,[{requestId:'character-1',who:'character',category:'신발',reason:'public_coverage'}]);
  for(const invalid of [{people:{}},{changes:{character:{items:[]}}},{changes:{character:{context:{location:'Mars'}}}}])assert.equal(normalizeSceneResponse(invalid).outcome,'unusable');
  const request=sceneRequest(home(),[message(1)]);assert.deepEqual(Object.keys(request),['people','contextMessages','messages']);assert.equal(request.wardrobes,undefined);assert.equal(request.profiles,undefined);assert.equal(request.people.character.worn[0].id,undefined);
+});
+test('의상 요청 ID와 단복수 의복명 정규화로 생성 결과를 안정적으로 연결한다',()=>{
+ const request={requestId:'persona-1',category:'신발',reason:'explicit',name:'low heels'};
+ const item={category:'신발',name:'low heel pumps',color:'nude',brand:'CHARLES & KEITH'};
+ assert.equal(satisfiesRequest(item,request,normalizeContext({location:'outside',phase:'formal'})),true);
+ const missing=resolveOutfit(home(),facts({location:'outside',space:'public',phase:'outdoors'}),{character:[shirt,pants,briefs],persona:[]}).missing;
+ assert.equal(missing[0].requestId,'character-1');
 });
 test('변한 신체 인포는 읽고 같은 상태와 작은 시간 변화는 건너뛴다',()=>{
  const info=value=>'<Scene_Info>Loc: Home\nPhysical state: '+value+'\nTime: 14:00</Scene_Info>';
@@ -425,9 +432,9 @@ test('가능한 기존 겉옷의 여밈 조절은 신체 제약에 맞춰 같은
 });
 test('부족한 홈웨어와 팬티만 생성하며 저장 재진입과 다음 판독에서 재사용한다',async()=>{
  const storage=memory(),store=new Store(storage);store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=legacyPersona();b.current=structuredClone(b.base);b.profiles.persona={fields:{'스타일':{value:'Restrained casual clothing'}},wardrobe:structuredClone(b.base.people.persona.items)};
- let count=0,seen;const generate=async request=>{count++;seen=request;return {newItems:{persona:[lounge,{...briefs,labelKo:'검정 팬티',brandKo:'유니클로'}]}};};
+ let count=0,seen;const generate=async request=>{count++;seen=request;return {newItems:{persona:request.missing.filter(n=>n.who==='persona').map(n=>n.slot==='briefs'?{...briefs,requestId:n.requestId,labelKo:'검정 팬티',brandKo:'유니클로'}:{...lounge,requestId:n.requestId})}};};
  const engine=new Engine(store,async()=>({changes:{}}),generate);await engine.read('c',bid,[message(1)],{force:true});
- assert.equal(count,1);assert.equal(seen.missing.length,2);assert.ok(seen.missing.some(n=>n.slot==='briefs'));assert.ok(seen.missing.some(n=>n.cause==='home_use'));assert.equal(b.extra.persona.length,2);
+ assert.equal(count,1);assert.equal(seen.missing.length,2);assert.equal(new Set(seen.missing.map(n=>n.requestId)).size,2);assert.ok(seen.missing.some(n=>n.slot==='briefs'));assert.ok(seen.missing.some(n=>n.cause==='home_use'));assert.equal(b.extra.persona.length,2);
  assert.ok(b.current.people.persona.items.some(i=>i.name==='drawstring lounge trousers'));assert.equal(underwearSlot(b.current.people.persona.items.find(i=>i.name==='briefs')),'briefs');
  await engine.read('c',bid,[message(1),message(2)],{force:true});assert.equal(count,1);
  const restored=new Store(storage),next=new Engine(restored,async()=>({changes:{}}),generate);await next.read('c',bid,[message(1),message(2),message(3)],{force:true});assert.equal(count,1);assert.equal(restored.branch('c',bid).extra.persona.length,2);

@@ -7,7 +7,7 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.5';
+export const EXTENSION_VERSION='1.6.6';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -406,7 +406,7 @@ export class Engine {
      if(!Array.isArray(items)||items.length>needs.length)throw Error('요청하지 않은 의상이 포함됐습니다. 기존 착장은 유지됩니다.');
      const remaining=[...needs];
      for(const value of items){
-      const item=normalizeItem(value),n=remaining.findIndex(need=>satisfiesRequest(item,need,resolved.state.people[who].context));
+      const item=normalizeItem(value),requestId=typeof value?.requestId==='string'?value.requestId.trim():'',n=requestId?remaining.findIndex(need=>need.requestId===requestId&&satisfiesRequest(item,need,resolved.state.people[who].context)):remaining.findIndex(need=>satisfiesRequest(item,need,resolved.state.people[who].context));
       if(n<0||!item.available)throw Error('생성된 의상이 요청한 종류·용도·핏을 충족하지 못했습니다. 기존 착장은 유지됩니다.');remaining.splice(n,1);
       if(!koreanDisplay(item.labelKo)||!koreanDisplay(item.brandKo))throw Error('생성된 의상의 한글 표시명이 누락됐습니다. 기존 데이터는 유지됩니다.');
       item.id='scene-'+branchId();added[who].push(item);wardrobes[who].push(item);

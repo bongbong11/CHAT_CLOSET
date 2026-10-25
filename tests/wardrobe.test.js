@@ -44,7 +44,7 @@ test('탈의 뒤 재착용은 코드가 기억에서 복구하고 판독 모델�
  s.bind('c',bid,'chat');s.resetChat('c','chat');assert.deepEqual(b.outfitMemory.character.beforeUndress,[]);
 });
 test('확장 판독만 이야기 우선 규칙을 받고 롤플 주입은 옷만 사용한다',()=>{
- assert.match(SCENE,/BOTH user input and roleplay output/);assert.match(SCENE,/Do not infer dressing actions/);assert.match(ANALYSIS,/wardrobeTargets/);assert.doesNotMatch(ANALYSIS,/wardrobeSize/);assert.match(WARDROBE_FILL,/missingByCategory/);
+ assert.match(SCENE,/BOTH user input and roleplay output/);assert.match(SCENE,/Qualifying categories may include pregnancy/);assert.match(SCENE,/illness requiring clothing-related accommodation or care wear/);assert.match(SCENE,/Do not infer routine dressing actions/);assert.match(ANALYSIS,/wardrobeTargets/);assert.doesNotMatch(ANALYSIS,/wardrobeSize/);assert.match(WARDROBE_FILL,/missingByCategory/);
 });
 
 test('하나의 기본 옷장 구성으로 기존 카테고리별 수량 기준을 적용',()=>{

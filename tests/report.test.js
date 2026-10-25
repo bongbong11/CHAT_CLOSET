@@ -42,4 +42,4 @@ test('미리 판독은 최근 문맥을 다시 보내되 이미 반영한 행동
  await e.read('c',id,messages,{force:true});assert.deepEqual(calls[1].messages,messages.slice(-1));assert.deepEqual(calls[1].contextMessages,messages.slice(-4,-1));assert.equal(calls[1].reread,true);
  messages.at(-1).content='Changed swipe';await e.read('c',id,messages);assert.equal(calls[2].messages.at(-1).content,'Changed swipe');
 });
-test('판독은 코디를 생성하지 않으며 생성은 설정에 맞는 제작자를 사용한다',()=>{assert.match(SCENE,/Do not select outfits/);assert.match(ANALYSIS,/in-world makers/);});
+test('판독은 코디를 생성하지 않으며 생성은 설정에 맞는 제작자를 사용한다',()=>{assert.match(SCENE,/Do not select outfits/);assert.match(ANALYSIS,/in-world maker/);});

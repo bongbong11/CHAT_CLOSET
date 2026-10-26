@@ -1,13 +1,13 @@
-import {needsOutfitRead} from './scene-gate.js';
+import {needsOutfitRead,readEnvironment,environmentValues,WEATHER_LABELS} from './scene-gate.js';
 import {wardrobeLevel,ownedItems,normalizeTraits,itemTraits,newItemPolicy} from './wardrobe.js';
-import {ensureContexts,normalizeSceneResponse,resolveOutfit,sceneRequest,matchesGeneratedRequest} from './outfit-rules.js';
+import {ensureContexts,normalizeSceneResponse,resolveOutfit,sceneRequest,matchesGeneratedRequest,mergeEnvironmentFacts,patchContext} from './outfit-rules.js';
 
 export const KEY = 'kikki-closet:v1';
 export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'];
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.8';
+export const EXTENSION_VERSION='1.6.9';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -24,7 +24,7 @@ export class DiagnosticLog{
   const c=this.output;if(!c)return;
   const snapshot=clone(row),buckets=new Map(),labels={scene:'장면 판독',storage:'서버 저장',task:'분석·옷장 작업',error:'오류',analysis:'취향 분석',wardrobe:'옷장 생성',items:'의상 생성',test:'연결 확인'};
   for(const [index,event] of snapshot.events.entries()){
-   const category=['warn','error'].includes(event.level)?'경고·오류':['gate','context','request','response','normalize','parse'].includes(event.stage)?'수집·모델 응답':['physical-state','decision','matching','apply'].includes(event.stage)?'착장 판단':'저장·결과';
+   const category=['warn','error'].includes(event.level)?'경고·오류':['gate','context','environment','request','response','normalize','parse'].includes(event.stage)?'수집·모델 응답':['physical-state','decision','matching','apply'].includes(event.stage)?'착장 판단':'저장·결과';
    if(!buckets.has(category))buckets.set(category,[]);buckets.get(category).push({order:index+1,...event});
   }
   const errors=snapshot.events.filter(e=>e.level==='error').length,warnings=snapshot.events.filter(e=>e.level==='warn').length;
@@ -83,7 +83,7 @@ export const text = (x,n=400) => typeof x==='string'?x.replace(/<\/?kikki_outfit
 export function emptyState(){return ensureContexts({scene:{time:'불명',place:'불명',activity:'불명',weather:'불명'},people:{character:{nude:false,items:[]},persona:{nude:false,items:[]}}});}
 export function sceneSummary(state){
  const summary={...(state?.sceneKo||{})},contexts=['character','persona'].map(who=>state?.people?.[who]?.context||{}),context=contexts.find(c=>c.location&&c.location!=='unknown')||contexts[0]||{};
- const labels={location:{home:'집',outside:'외부',work:'직장',school:'학교',hospital:'병원',other:'기타 장소'},phase:{resting:'휴식',washing:'씻는 중',after_washing:'씻은 후',sleeping:'수면',preparing:'준비 중',outdoors:'외출 중',working:'일하는 중',formal:'격식 있는 자리',care:'돌봄·치료'},weather:{mild:'온화',hot:'더움',cold:'추움',rain:'비',snow:'눈'}};
+ const labels={location:{home:'집',outside:'외부',work:'직장',school:'학교',hospital:'병원',other:'기타 장소'},phase:{resting:'휴식',washing:'씻는 중',after_washing:'씻은 후',sleeping:'수면',preparing:'준비 중',outdoors:'외출 중',working:'일하는 중',formal:'격식 있는 자리',care:'돌봄·치료'},weather:WEATHER_LABELS};
  summary.activity=labels.phase[context.phase]||'';
  for(const [field,key] of [['place','location'],['activity','phase'],['weather','weather']])if(!summary[field]||summary[field]==='불명')summary[field]=labels[key][context[key]]||'';
  if(typeof context.temperature==='number'&&Number.isFinite(context.temperature)&&!String(summary.weather).includes('°')&&!String(summary.weather).includes('℃'))summary.weather=[summary.weather,context.temperature+'℃'].filter(Boolean).join(' · ');
@@ -369,6 +369,10 @@ export class Engine {
   }
   if(chatId&&!timeline){baseline=emptyState();extra=clone(b.extra);history=[];outfits=[];memory={};start=0;}
   const added={character:[],persona:[]};let state=baseline;
+  const environmentStart=recentTurnStart(messages,this.store.data.settings.chatTurns),collect=list=>Object.assign({},...list.map(message=>readEnvironment(message.content)));
+  const previousEnvironment=collect(messages.slice(environmentStart,start)),freshEnvironment=collect(messages.slice(Math.max(environmentStart,start)));
+  const unconfirmed=key=>['character','persona'].every(who=>baseline.people[who].context[key]===null||baseline.people[who].context[key]==='unknown');
+  const environmentEvidence=force||start===0?collect(messages.slice(environmentStart)):{...Object.fromEntries(Object.entries(previousEnvironment).filter(([key])=>unconfirmed(key))),...Object.fromEntries(Object.entries(freshEnvironment).filter(([key,value])=>value!==previousEnvironment[key]||unconfirmed(key)))};
   const needsRead=force||chatId&&!timeline||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
   const attemptKey=JSON.stringify([id,bid,chatId,key,profileId,epoch]);
   if(!force&&this.attempts.has(attemptKey)){trace?.finish('unusable','같은 응답의 자동 재시도 생략',{reason:this.attempts.get(attemptKey)});return null;}
@@ -391,7 +395,8 @@ export class Engine {
     trace?.finish('unusable','확인된 착장 유지 · 응답 내용 확인 보류',{unresolved:parsed.unresolved});this.controller=null;return null;
    }
    this.attempts.delete(attemptKey);if(trace)trace.decision=parsed.outcome;
-   const facts=parsed.facts,wardrobes=Object.fromEntries(['character','persona'].map(w=>[w,ownedItems({...b,extra,current:baseline},w)]));
+   const facts=mergeEnvironmentFacts(parsed.facts,environmentEvidence,baseline),wardrobes=Object.fromEntries(['character','persona'].map(w=>[w,ownedItems({...b,extra,current:baseline},w)]));
+   trace?.event('environment','짧은 계절·기온·날씨 보완',{explicit:environmentEvidence,model:parsed.facts.environment||{},applied:Object.fromEntries(['character','persona'].map(who=>[who,environmentValues(facts.changes[who]?.context)]))});
    const matching={newItems:newItemPolicy(this.store.data.settings.newItems)};
    let resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles,matching);
    trace?.event('physical-state','신체 상태 추가·유지·해제',Object.fromEntries(['character','persona'].map(who=>{
@@ -426,6 +431,12 @@ export class Engine {
    }
    if(!valid()){trace?.finish('cancelled','취소된 판독 결과 폐기');return null;}
    state=validateState(resolved.state,wardrobes);
+  }
+  if(!needsRead&&Object.keys(environmentEvidence).length){
+   const facts=mergeEnvironmentFacts({changes:{}},environmentEvidence,baseline);state=clone(baseline);
+   for(const who of ['character','persona'])state.people[who].context=patchContext(state.people[who].context,facts.changes[who]?.context);
+   if(facts.scene)Object.assign(state.scene,facts.scene);if(facts.sceneKo)state.sceneKo={...(state.sceneKo||{}),...facts.sceneKo};
+   trace?.event('environment','명시된 환경값 갱신 · 모델 호출 없음',{explicit:environmentEvidence});
   }
   const meaningful=value=>JSON.stringify({scene:value.scene,sceneKo:value.sceneKo,people:Object.fromEntries(['character','persona'].map(who=>[who,{nude:value.people[who].nude,items:value.people[who].items,context:value.people[who].context}]))});
   const changed=meaningful(state)!==meaningful(baseline);

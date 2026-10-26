@@ -1,7 +1,8 @@
 import {visibleMessages} from '../core.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {needsOutfitRead} from '../scene-gate.js';
+import {needsOutfitRead,readEnvironment,environmentValues} from '../scene-gate.js';
+import {normalizeSceneResponse,mergeEnvironmentFacts} from '../outfit-rules.js';
 import {Store,Engine,DiagnosticLog,outfitInjection,savedOutfitForMessages,emptyState,recentTurnStart} from '../core.js';
 
 const m=(id,content)=>({id:String(id),role:'character',content});
@@ -124,4 +125,49 @@ test('처리 기준점이 사용자 입력 뒤에 있어도 그 입력을 새 �
  const h=readHarness(),messages=longHistory();messages.push({id:'pending-user',role:'user',content:'I leave home after the shower.'});await h.read(messages,{force:true});
  const reply={id:'pending-answer',role:'character',content:'He went out with her.'};messages.push(reply);await h.read(messages);const request=h.calls.at(-1);
  assert.deepEqual(request.messages,[reply]);assert.deepEqual(request.contextMessages,[messages.at(-2)]);assert.equal(request.reread,undefined);
+});
+
+test('같은 환경값은 태그·백틱·JSON·표·HTML·한영 라벨에서 짧은 필드로 읽힌다',()=>{
+ const samples=['<Any_Status><small>Season: 🍂Autumn\nWeather: ☁️ Overcast · 14°C</small></Any_Status>','```json\n{"season":"autumn","weather":"overcast","temperature":14}\n```','`Season: autumn`\n`Weather: cloudy · 14°C`','| 계절 | 가을 |\n| 날씨 | 흐림 |\n| 기온 | 14℃ |','<dl><dt>Season</dt><dd>Autumn</dd><dt>Weather</dt><dd>Overcast · 14°C</dd></dl>','**계절** = 가을; **기온**: 14도; **날씨**: 흐림'];
+ for(const sample of samples)assert.deepEqual(readEnvironment(sample),{season:'autumn',weather:'cloudy',temperature:14},sample);
+ assert.deepEqual(readEnvironment('Weather: cloudy\nTemperature: 57.2°F\nSeason: autumn'),{weather:'cloudy',temperature:14,season:'autumn'});
+ assert.deepEqual(readEnvironment('Temperature: −3℃'),{temperature:-3});assert.deepEqual(readEnvironment('Temp = 0'),{temperature:0});
+ assert.deepEqual(readEnvironment('혈압 120/80. She wore a thick coat. November 30.'),{});assert.deepEqual(readEnvironment('[OOC] Weather: rain\nSeason: winter'),{});assert.deepEqual(readEnvironment('Tomorrow forecast Weather: rain'),{});
+ assert.deepEqual(readEnvironment('Season: unknown\nTemperature: 500°C\nWeather: 미확인'),{});
+ assert.deepEqual(readEnvironment('Body Temperature: 37°C\nWeather: 비슷함'),{});assert.deepEqual(readEnvironment('현재계절: 가을\nCurrent Weather: cloudy · 14°C'),{season:'autumn',weather:'cloudy',temperature:14});
+ assert.deepEqual(readEnvironment('Weather: cloudless\nTemperature: 14 degrees Celsius'),{weather:'clear',temperature:14});assert.deepEqual(readEnvironment('Weather: rainbow'),{});
+});
+
+test('모델의 잘못된 scene 위치와 한국어 날씨의 °C 표기도 버리지 않고 복구한다',()=>{
+ const raw={changes:{character:{context:{location:'outside'}},persona:{context:{location:'outside'}},scene:{weather:'overcast, 14°C'},sceneKo:{weather:'흐림, 14°C'}}};
+ const parsed=normalizeSceneResponse(raw);assert.equal(parsed.outcome,'applied');assert.deepEqual(parsed.facts.environment,{weather:'cloudy',temperature:14});assert.equal(parsed.facts.sceneKo.weather,'흐림 · 14℃');assert.ok(parsed.adjustments.some(value=>value.path==='changes.scene'));
+ const merged=mergeEnvironmentFacts(parsed.facts,{season:'autumn'},emptyState());assert.deepEqual(environmentValues(merged.changes.persona.context),{season:'autumn',weather:'cloudy',temperature:14});
+ const only=normalizeSceneResponse({scene:{weather:'rain, 6°C'}});assert.equal(only.outcome,'applied');assert.deepEqual(only.facts.environment,{weather:'rain',temperature:6});
+});
+
+test('모델이 기후를 생략해도 명시된 값을 저장하며 정보가 없으면 이전 값 유지 또는 미확인',async()=>{
+ const h=readHarness(),messages=[...turn(0,'Season: 🍂Autumn\nWeather: ☁️ Overcast · 14°C')];await h.read(messages);
+ for(const who of ['character','persona'])assert.deepEqual(environmentValues(h.store.branch('c',h.bid).current.people[who].context),{season:'autumn',weather:'cloudy',temperature:14});
+ messages.push(...turn(1));await h.read(messages);assert.equal(h.calls.length,1);assert.equal(h.store.branch('c',h.bid).current.people.persona.context.temperature,14);
+ const empty=readHarness();await empty.read(turn(0));assert.equal(empty.store.branch('c',empty.bid).current.people.persona.context.weather,'unknown');assert.equal(empty.store.branch('c',empty.bid).current.people.persona.context.temperature,null);
+});
+
+test('인포 없는 본문 기후는 모델이 해석하고 반복된 오래된 인포가 새 본문 값을 덮지 않는다',async()=>{
+ const h=readHarness(),messages=turn(0,'Season: autumn\nWeather: cloudy · 14°C');await h.read(messages);
+ h.replies.push({changes:{character:{context:{weather:'rain',temperature:6}},persona:{context:{weather:'rain',temperature:6}}}});messages.push(...turn(1,'Rain began to fall.'));await h.read(messages);assert.equal(h.calls.length,2);
+ messages.push(...turn(2));await h.read(messages);assert.equal(h.calls.length,2);assert.equal(h.store.branch('c',h.bid).current.people.persona.context.weather,'rain');assert.equal(h.store.branch('c',h.bid).current.people.persona.context.temperature,6);
+ messages.push(...turn(3,'Season: autumn\nWeather: cloudy · 14°C'));await h.read(messages);assert.equal(h.store.branch('c',h.bid).current.people.persona.context.weather,'rain');
+});
+
+test('작은 명시 기온 변화는 추가 모델 호출·의상 생성 없이 저장하고 큰 변화는 판독한다',async()=>{
+ const h=readHarness(),messages=turn(0,'Season: autumn\nWeather: cloudy · 14°C');await h.read(messages);const worn=structuredClone(h.store.branch('c',h.bid).current.people);
+ messages.push(...turn(1,'Season: autumn\nWeather: cloudy · 15°C'));await h.read(messages);assert.equal(h.calls.length,1);assert.equal(h.store.branch('c',h.bid).current.people.persona.context.temperature,15);assert.deepEqual(h.store.branch('c',h.bid).current.people.persona.items,worn.persona.items);
+ messages.push(...turn(2,'Season: autumn\nWeather: cloudy · 10°C'));await h.read(messages);assert.equal(h.calls.length,2);assert.equal(h.store.branch('c',h.bid).current.people.persona.context.temperature,10);
+});
+
+test('명시한 인물별 기후와 서로 다른 장소는 공통 인포로 일괄 덮지 않는다',()=>{
+ const base=emptyState();base.people.character.context.location='home';base.people.persona.context.location='outside';
+ const parsed=normalizeSceneResponse({changes:{persona:{context:{weather:'snow',temperature:-3}}}}).facts;
+ const result=mergeEnvironmentFacts(parsed,{season:'autumn',weather:'clear',temperature:14},base);
+ assert.equal(result.changes.persona.context.weather,'snow');assert.equal(result.changes.persona.context.temperature,-3);assert.equal(result.changes.character,undefined);
 });

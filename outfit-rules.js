@@ -1,5 +1,6 @@
 // Pure scene facts and clothing rules. No model, storage or DOM access.
 import {itemTraits,underwearSlot,newItemPolicy,matchingGroup} from './wardrobe.js';
+import {environmentValues,environmentText} from './scene-gate.js';
 
 const PEOPLE=['character','persona'];
 const CATEGORIES=['상의','하의','속옷','신발','겉옷','소품'];
@@ -8,7 +9,7 @@ const VALUES={
  space:['unknown','private','public'],
  phase:['unknown','resting','washing','after_washing','sleeping','preparing','outdoors','working','formal','care'],
  season:['unknown','spring','summer','autumn','winter'],
- weather:['unknown','mild','hot','cold','rain','snow'],
+ weather:['unknown','mild','hot','cold','rain','snow','clear','cloudy','fog','windy','storm'],
  purpose:['unknown','casual','work','formal','care'],
  exception:['','barefoot','undressed','keep'],
 };
@@ -46,7 +47,7 @@ export function normalizeSceneResponse(raw,{names={}}={}){
  const note=(path,input,output)=>{if(JSON.stringify(input)!==JSON.stringify(output))adjustments.push({path,input,output});};
  const unknown=(path,value,reason='meaning unclear')=>unresolved.push({path,value,reason});
  const enumValue=(key,value,path)=>{
-  const token=word(value),next=aliases[key]?.[token]??token;
+  const token=word(value),next=(['season','weather'].includes(key)?environmentValues({[key]:value})[key]:undefined)??aliases[key]?.[token]??token;
   if(VALUES[key]?.includes(next)||key==='category'&&CATEGORIES.includes(next)||key==='op'&&['wear','remove','adjust','nude'].includes(next)){note(path,value,next);return next;}
   if(value!==null&&value!==undefined&&value!=='')unknown(path,value);
  };
@@ -73,6 +74,7 @@ export function normalizeSceneResponse(raw,{names={}}={}){
  if(object(root.result)||object(root.data)){note('wrapper',Object.keys(root),['unwrapped']);root=canonicalObject(root.result||root.data);}
  const supplied=root.changes??root.people??root.characters??root;
  const changes=canonicalObject(supplied);
+ for(const field of ['scene','sceneKo'])if(!object(root[field])&&object(changes[field])){root[field]=changes[field];note('changes.'+field,'nested','recovered');}
  if(object(root.changes)&&!Object.keys(root.changes).length)explicitNoChange=true;
  if(bool(root.noChange)===true||word(root.status)==='unchanged')explicitNoChange=true;
  for(const [actor,value] of Object.entries(changes)){
@@ -88,7 +90,7 @@ export function normalizeSceneResponse(raw,{names={}}={}){
    if(VALUES[key]){
     const result=enumValue(key,value,path);if(result!==undefined)next.context[key]=result;
    }else if(key==='temperature'){
-    const numeric=typeof value==='number'?value:typeof value==='string'&&/^-?\d+(?:\.\d+)?\s*(?:°?\s*c|℃)?$/i.test(value.trim())?parseFloat(value):NaN;
+    const numeric=environmentValues({temperature:value}).temperature;
     if(Number.isFinite(numeric)&&numeric>=-80&&numeric<=65){next.context[key]=numeric;note(path,value,numeric);}else unknown(path,value);
    }else if(['conditions','needs','resolvedConditions','resolvedNeeds'].includes(key)){
     const list=Array.isArray(value)?value:typeof value==='string'?[value]:null;
@@ -125,21 +127,38 @@ export function normalizeSceneResponse(raw,{names={}}={}){
   if(change.items||change.outfit)unknown(who+'.items',change.items||change.outfit,'inventory needs interpretation');
   if(Object.keys(next.context).length||next.actions.length||next.transition!==undefined)facts.changes[who]=next;
  }
+ for(const field of ['sceneKo','scene'])if(object(root[field])){const values=environmentValues(canonicalObject(root[field]));if(Object.keys(values).length)facts.environment={...facts.environment,...values};}
  for(const field of ['scene','sceneKo']){
   if(!object(root[field]))continue;
   const scene=canonicalObject(root[field]),summary={};
   for(const key of ['time','place','weather']){
    const value=scene[key];if(typeof value!=='string'||!value.trim())continue;
+   if(key==='weather'){const compact=environmentText(environmentValues({weather:value}),field==='sceneKo'?'ko':'en');if(compact)summary[key]=compact;else note(field+'.weather',value,'display omitted');continue;}
    if(field==='scene'&&/[가-힣]/.test(value)||field==='sceneKo'&&/[A-Za-z]/.test(value)){note(field+'.'+key,value,'display omitted');continue;}
    summary[key]=value.trim();
   }
   if(Object.keys(summary).length)facts[field]=summary;
  }
- const substantive=Object.keys(facts.changes).length>0;
+ const substantive=Object.keys(facts.changes).length>0||Object.keys(facts.environment||{}).length>0;
  const outcome=substantive?(unresolved.length?'partial':'applied'):explicitNoChange&&!unresolved.length?'unchanged':'unusable';
  return {facts,outcome,adjustments,unresolved};
 }
 export const validateSceneFacts=(raw,options)=>normalizeSceneResponse(raw,options).facts;
+
+export function mergeEnvironmentFacts(facts,evidence,baseline){
+ const next=structuredClone(facts),shared={...(facts.environment||{}),...evidence};
+ const locations=new Set(PEOPLE.map(who=>{const value=next.changes[who]?.context?.location;return value&&value!=='unknown'?value:baseline.people[who].context.location;}).filter(value=>value&&value!=='unknown'));
+ if(locations.size<=1)for(const who of PEOPLE){
+  const change=next.changes[who]||{context:{},actions:[]};
+  for(const [key,value] of Object.entries(shared))if((change.context[key]===undefined||change.context[key]==='unknown'||change.context[key]===null)&&value!==baseline.people[who].context[key])change.context[key]=value;
+  if(Object.keys(change.context).length||change.actions.length||change.transition!==undefined)next.changes[who]=change;
+ }
+ const display=environmentValues({...baseline.people.character.context,...next.changes.character?.context,...shared});
+ if(Object.keys(shared).length&&environmentText(display)){
+  next.scene={...(next.scene||{}),weather:environmentText(display)};next.sceneKo={...(next.sceneKo||{}),weather:environmentText(display,'ko')};
+ }
+ return next;
+}
 
 export function patchContext(previous,patch={}){
  const next=normalizeContext(previous);

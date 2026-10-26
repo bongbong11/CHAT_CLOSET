@@ -137,7 +137,11 @@ await page.waitForFunction(()=>document.querySelector('.kc-main .kc-scene')?.tex
 const branch=Object.values(stored().data.characters['c.png'].branches)[0];assert.equal(branch.current.people.character.nude,false);assert.deepEqual(branch.current.people.character.items.map(i=>i.id).sort(),beforeUndressIds);assert.deepEqual([...branch.outfitMemory.character.beforeUndress].sort(),beforeUndressIds);
 assert.equal(JSON.parse((await page.evaluate(()=>calls.at(-1))).messages[1].content).outfitMemory,undefined);
 
-// Inline memo is separate from story text; toggles/tabs/rendering never call the model.
+// Generic climate labels are collected even when the model omits them, in all three views.
+await page.evaluate(async()=>{TEST_CONTEXT.chat.at(-1).mes+='\n\n'+String.fromCharCode(96)+'계절: 가을'+String.fromCharCode(96)+'\n기온 = 14℃\n날씨: 흐림';await TEST_CONTEXT.eventSource.emit('MESSAGE_UPDATED',TEST_CONTEXT.chat.length-1);});
+await readNow();await page.locator('.kc-main .kc-collected summary').click();assert.match(await page.locator('.kc-main .kc-collected').innerText(),/가을/);assert.match(await page.locator('.kc-main .kc-collected').innerText(),/14℃/);assert.match(await page.locator('.kc-main .kc-collected').innerText(),/흐림/);await page.locator('.kc-main .kc-collected summary').click();
+await page.locator('[data-action="close"]').click();await page.locator('.kc-mascot').click();await page.locator('.kc-bubble .kc-collected summary').click();assert.match(await page.locator('.kc-bubble .kc-collected').innerText(),/가을[\s\S]*14℃[\s\S]*흐림/);await page.locator('.kc-bubble [data-action="mini-open"]').click();
+// Inline memo is separate from story text; toggles/rendering never call the model.
 const beforeInline=await page.evaluate(()=>calls.length);
 await page.evaluate(async()=>{kikkiClosetInterceptor(TEST_CONTEXT.chat,4096,()=>{},'normal');const expanded=fixtureMacros.kikki_outfit();const payload={messages:[{content:expanded},{content:'{{kikki_outfit}}'},{content:'<kikki_outfit>OLD</kikki_outfit>'}]};await TEST_CONTEXT.eventSource.emit('GENERATE_AFTER_DATA',payload,false);window.macroPayload=payload;});
 const macroPayload=await page.evaluate(()=>window.macroPayload);assert.match(macroPayload.messages[0].content,/Character:/);assert.equal(macroPayload.messages[1].content,'');assert.equal(macroPayload.messages[2].content,'');assert.doesNotMatch(JSON.stringify(macroPayload),/conditions|profile|priority|NEVER|OLD/);
@@ -147,6 +151,7 @@ await page.locator('[name="displayMode"]').selectOption('inline');await saved();
 await page.evaluate(()=>{document.querySelector('#chat').style.pointerEvents='auto';renderChat();});
 const lastMemo=page.locator('.mes').last().locator('.kc-inline-card');await lastMemo.waitFor();assert.equal(await page.locator('.kc-inline-card').count(),1);
 assert.equal(await page.locator('.kc-mascot').isVisible(),false);
+await lastMemo.locator('.kc-collected summary').click();assert.match(await lastMemo.locator('.kc-collected').innerText(),/가을[\s\S]*14℃[\s\S]*흐림/);await lastMemo.locator('.kc-collected summary').click();
 assert.match(await lastMemo.locator('.kc-inline-toggle').innerText(),/착장정보/);
 assert.equal(await lastMemo.locator('.kc-inline-person h4').first().innerText(),'서윤');assert.equal(await lastMemo.locator('.kc-inline-person h4').last().innerText(),'나');assert.equal(await lastMemo.locator('[role="tab"]').count(),0);
 assert.equal(await page.locator('.mes_text .kc-inline-card').count(),0);

@@ -1,10 +1,11 @@
 import {CATEGORIES,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabel,itemUiBrand,koreanDisplay,hash,displayLimit} from './core.js';
+import {WEATHER_LABELS} from './scene-gate.js';
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const PEOPLE=['character','persona'];
 
 export function collectedHtml(state,names={}){
- const labels={location:{home:'집',outside:'외부',work:'직장',school:'학교',hospital:'병원',other:'기타'},space:{private:'사적 공간',public:'공공 공간'},phase:{resting:'휴식',washing:'씻는 중',after_washing:'씻은 후',sleeping:'수면',preparing:'준비',outdoors:'외출',working:'업무',formal:'격식 있는 자리',care:'돌봄·치료'},season:{spring:'봄',summer:'여름',autumn:'가을',winter:'겨울'},weather:{mild:'온화',hot:'더움',cold:'추움',rain:'비',snow:'눈'},purpose:{casual:'일상',work:'업무',formal:'격식',care:'돌봄·치료'},exception:{barefoot:'명시된 맨발 유지',undressed:'명시된 탈의 유지',keep:'현재 상태 유지'}};
+ const labels={location:{home:'집',outside:'외부',work:'직장',school:'학교',hospital:'병원',other:'기타'},space:{private:'사적 공간',public:'공공 공간'},phase:{resting:'휴식',washing:'씻는 중',after_washing:'씻은 후',sleeping:'수면',preparing:'준비',outdoors:'외출',working:'업무',formal:'격식 있는 자리',care:'돌봄·치료'},season:{spring:'봄',summer:'여름',autumn:'가을',winter:'겨울'},weather:WEATHER_LABELS,purpose:{casual:'일상',work:'업무',formal:'격식',care:'돌봄·치료'},exception:{barefoot:'명시된 맨발 유지',undressed:'명시된 탈의 유지',keep:'현재 상태 유지'}};
  const fields=[['location','장소'],['space','공간'],['phase','활동'],['conditions','신체 상태'],['needs','착용 제약'],['season','계절'],['temperature','기온'],['weather','날씨'],['purpose','용도'],['exception','현재 예외']];
  const people=PEOPLE.map(who=>{
   const context=state?.people?.[who]?.context||{};

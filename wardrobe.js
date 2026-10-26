@@ -4,11 +4,22 @@ export function newItemPolicy(value){return ({'적게':'low','보통':'medium','
 export function underwearSlot(item){
  if(item.category!=='속옷')return '';
  const name=item.name||'';
- if(/\b(?:socks?|stockings?|tights|pantyhose)\b|양말|스타킹|타이츠/i.test(name))return 'socks';
+ if(/\b(?:socks?|stockings?|tights|pantyhose|footies|foot liners?|ankle liners?)\b|양말|스타킹|타이츠|덧버선|덧신|풋커버/i.test(name))return 'socks';
  if(/\bbra(?:lette)?s?\b|브라|브래지어/i.test(name))return 'bra';
- if(/\b(?:undershirt|vest|camisole)\b|런닝|러닝셔츠|속셔츠|캐미솔/i.test(name))return 'undershirt';
+ if(/\b(?:undershirts?|vests?|camisoles?|singlets?)\b|런닝|러닝셔츠|속셔츠|캐미솔/i.test(name))return 'undershirt';
  if(['bra','briefs','socks','undershirt'].includes(item.traits?.slot))return item.traits.slot;
  return 'briefs';
+}
+export function matchingGroup(item){
+ if(item.category==='속옷')return ['bra','briefs','socks','undershirt'].includes(item.slot)?item.slot:underwearSlot(item);
+ if(item.category==='소품'){
+  const name=item.name||'';
+  if(/^(?:accessor(?:y|ies)|소품)\s*$/i.test(name))return 'accessory';
+  if(/\b(?:jewell?ery|necklaces?|pendants?|earrings?|rings?|bracelets?|bangles?|brooch(?:es)?|chains?|piercings?|watches|watch|timepieces?|cufflinks?|tie clips?)\b|목걸이|펜던트|귀걸이|반지|팔찌|브로치|피어싱|시계|장신구|귀금속/i.test(name))return 'jewelry';
+  if(/\b(?:bags?|totes?|belts?|glasses|sunglasses|spectacles|scarves|scarf|ties|neckties|wallets?|pouches?|handkerchiefs?|backpacks?|caps?|hats?|gloves?|umbrellas?)\b|가방|벨트|안경|선글라스|스카프|넥타이|지갑|파우치|손수건|모자|장갑|우산/i.test(name))return 'utility';
+  return 'accessory';
+ }
+ return ({상의:'top',하의:'bottom',겉옷:'outerwear',신발:'footwear'})[item.category]||item.category;
 }
 export function normalizeTraits(value={}){
  const result={};

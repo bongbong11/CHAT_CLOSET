@@ -4,8 +4,8 @@ import {Store,Engine,KEY,emptyState,recordDisplay,savedDisplay,pruneDisplayChat,
 import {needsOutfitRead} from '../scene-gate.js';
 import {registerOutfitMacro,injectPayload} from '../host.js';
 import {requireEnglishProfile,toModelData} from '../model-schema.js';
-import {normalizeContext,normalizeSceneResponse,patchContext,validateSceneFacts,resolveOutfit,sceneRequest,satisfiesRequest} from '../outfit-rules.js';
-import {itemTraits,underwearSlot,newItemPolicy} from '../wardrobe.js';
+import {normalizeContext,normalizeSceneResponse,patchContext,validateSceneFacts,resolveOutfit,sceneRequest,satisfiesRequest,matchesGeneratedRequest} from '../outfit-rules.js';
+import {itemTraits,underwearSlot,newItemPolicy,matchingGroup} from '../wardrobe.js';
 
 const memory=()=>{const map=new Map();return {getItem:key=>map.get(key)||null,setItem:(key,value)=>map.set(key,value),removeItem:key=>map.delete(key)};};
 const message=(id,content='He smiles.',swipe=0)=>({id:String(id),content,role:'character',swipe});
@@ -443,7 +443,7 @@ test('부족한 홈웨어와 팬티만 생성하며 저장 재진입과 다음 �
 test('생성이 다른 속옷 슬롯을 돌려주면 저장을 부분 변경하지 않는다',async()=>{
  const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=home();b.base.people.character.items=b.base.people.character.items.filter(i=>i.id!=='briefs');b.current=structuredClone(b.base);b.profiles.character={wardrobe:[shirt,pants,shoes]};
  const before=structuredClone(b),engine=new Engine(store,async()=>({changes:{character:{context:{location:'outside',space:'public',phase:'outdoors'}}}}),async()=>({newItems:{character:[{id:'wrong',category:'속옷',name:'bra',brand:'UNIQLO',labelKo:'브라',brandKo:'유니클로',traits:{slot:'briefs'}}]}}));
- await assert.rejects(engine.read('c',bid,[message(1)]),/종류·용도·핏/);assert.deepEqual(b,before);
+ await assert.rejects(engine.read('c',bid,[message(1)]),/요청과 연결/);assert.deepEqual(b,before);
 });
 
 
@@ -463,4 +463,33 @@ test('기존 추운 외출 상태는 얇은 겉옷을 억지로 고르지 않고
 test('매칭 확인용 내부 값만 추가된 턴은 착장 변경 이력으로 쌓지 않는다',async()=>{
  const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=home();b.current=home();b.profiles.character={wardrobe:owned.character};
  const engine=new Engine(store,async()=>({changes:{}}));await engine.read('c',bid,[message(1)],{force:true});assert.equal(b.history.length,0);assert.ok(b.current.people.character.matchKey);
+});
+
+test('생성 의상은 모든 모델에서 큰 카테고리와 공통 그룹으로 연결한다',()=>{
+ for(const [category,requested,returned] of [['상의','shirt','linen blouse'],['하의','grey sweats','drawstring joggers'],['신발','shoes','Leather Loafers'],['신발','pumps','satin heels'],['겉옷','thick cardigan','cable knit jacket']]){
+  assert.equal(matchesGeneratedRequest({category,name:returned,color:'heather grey',brand:'Other maker'},{category,reason:'explicit',name:requested,color:'grey',brand:'Requested maker'}),true);
+ }
+ assert.equal(matchesGeneratedRequest({category:'신발',name:'loafers'},{category:'상의',name:'shirt'}),false);
+ for(const [name,group] of [['bralette','bra'],['sports bra','bra'],['boxer shorts','briefs'],['briefs','briefs'],['footies','socks'],['덧버선','socks'],['stockings','socks'],['camisole','undershirt'],['gold necklace','jewelry'],['silver ring','jewelry'],['leather belt','utility'],['tote bag','utility']])assert.equal(matchingGroup({category:['jewelry','utility'].includes(group)?'소품':'속옷',name}),group,name);
+ assert.equal(matchesGeneratedRequest({category:'속옷',name:'bralette'},{category:'속옷',name:'bra',matchGroup:'bra'}),true);
+ assert.equal(matchesGeneratedRequest({category:'속옷',name:'boxers'},{category:'속옷',name:'bra',matchGroup:'bra'}),false);
+ assert.equal(matchesGeneratedRequest({category:'소품',name:'silver ring'},{category:'소품',name:'necklace',matchGroup:'jewelry'}),true);
+ assert.equal(matchesGeneratedRequest({category:'소품',name:'tote bag'},{category:'소품',name:'necklace',matchGroup:'jewelry'}),false);
+ assert.equal(matchesGeneratedRequest({category:'소품',name:'silver torc'},{category:'소품',name:'necklace',matchGroup:'jewelry'}),true);
+});
+
+test('카테고리로 통과한 생성품은 이름·색이 달라도 실제 착장까지 연결되고 재검증에서 탈락하지 않는다',async()=>{
+ for(const withIds of [true,false]){
+  const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);let calls=0,seen;
+  const engine=new Engine(store,async()=>({changes:{character:{actions:[{op:'wear',category:'하의',name:'grey sweats',color:'grey'}]},persona:{actions:[{op:'wear',category:'신발',name:'shoes'},{op:'wear',category:'소품',name:'necklace'}]}}}),async request=>{
+   calls++;seen=request;return {newItems:Object.fromEntries(['character','persona'].map(who=>[who,request.missing.filter(n=>n.who===who).map(n=>({...(withIds?{requestId:n.requestId}:{}),id:n.requestId,category:n.category,name:n.category==='하의'?'drawstring joggers':n.category==='신발'?'Leather Loafers':'silver bracelet',color:'heather grey',brand:'Maker',labelKo:'회색 의류',brandKo:'제작자',available:true}))]))};
+  });
+  await engine.read('c',bid,[message(1)]);assert.equal(calls,1);assert.equal(seen.missing.find(n=>n.category==='소품').matchGroup,'jewelry');assert.equal(b.current.people.character.items[0].name,'drawstring joggers');assert.ok(b.current.people.persona.items.some(i=>i.name==='Leather Loafers'));assert.ok(b.current.people.persona.items.some(i=>i.name==='silver bracelet'));assert.equal(b.extra.persona.length,2);
+ }
+});
+
+test('같은 카테고리의 여러 생성품도 요청 ID에 연결된 착용 상태를 서로 바꾸지 않는다',async()=>{
+ const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B');store.data.settings.newItems='off';
+ const engine=new Engine(store,async()=>({changes:{character:{actions:[{op:'wear',category:'상의',name:'linen shirt',wearing:'rolled sleeves',layer:true},{op:'wear',category:'상의',name:'cotton tee',wearing:'loose hem',layer:true}]}}}),async request=>({newItems:{character:request.missing.map((n,i)=>({requestId:n.requestId,id:n.requestId,category:'상의',name:i===0?'cotton tee':'linen shirt',brand:'Maker',labelKo:'상의',brandKo:'제작자'}))}}));
+ await engine.read('c',bid,[message(1)]);const items=store.branch('c',bid).current.people.character.items;assert.equal(items.length,2);assert.equal(items.find(i=>i.name==='cotton tee').wearing,'rolled sleeves');assert.equal(items.find(i=>i.name==='linen shirt').wearing,'loose hem');
 });

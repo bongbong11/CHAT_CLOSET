@@ -19,6 +19,26 @@ function connectionFailure(error){
  return Object.assign(Error('모델 연결 실패 ('+status+'). '+detail,{cause:error}),{kind:'connection',status:Number(status)});
 }
 
+function responseData(response){
+ const candidate=response?.candidates?.[0],choice=response?.choices?.[0];
+ const content=response?.content??candidate?.content??choice?.message?.content;
+ const parts=content?.parts||Array.isArray(content)&&content;
+ const raw=parts?parts.filter(part=>!part.thought&&typeof part.text==='string').map(part=>part.text).join(''):content??choice?.text??response?.results?.[0]?.text??response?.completion??response?.text??response;
+ return {raw,finishReason:response?.finish_reason??response?.finishReason??choice?.finish_reason??candidate?.finishReason??response?.stop_reason,usage:response?.usage??response?.usageMetadata};
+}
+function incompleteJSON(raw){
+ if(typeof raw!=='string')return false;
+ const first=raw.search(/[\[{]/);if(first<0)return false;
+ let depth=0,quoted=false,escaped=false;
+ for(const char of raw.slice(first)){
+  if(quoted){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char==='"')quoted=false;continue;}
+  if(char==='"')quoted=true;
+  else if(char==='{'||char==='[')depth++;
+  else if(char==='}'||char===']'){if(--depth===0)return false;}
+ }
+ return depth>0||quoted;
+}
+
 
 export function createHost(context,service,worldInfo,diagnostics={}){
  const identity=()=>{
@@ -75,14 +95,14 @@ export function createHost(context,service,worldInfo,diagnostics={}){
   const profile=service.getProfile(profileId);service.validateProfile(profile);
   const ctl=new AbortController(),cancel=()=>ctl.abort();signal?.addEventListener('abort',cancel,{once:true});let timer;
   try{
-   const work=service.sendRequest(profileId,messages,maxTokens,{signal:ctl.signal,stream:false,extractData:true,includePreset:false,includeInstruct:false});
+   const work=service.sendRequest(profileId,messages,maxTokens,{signal:ctl.signal,stream:false,extractData:false,includePreset:false,includeInstruct:false});
    const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{ctl.abort();reject(Error('연결 모델 응답 시간이 초과되었습니다.'));},90000);ctl.signal.addEventListener('abort',()=>reject(abortError()),{once:true});});
    return await Promise.race([work,timeout]);
   }finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
  }
  async function request(profileId,system,data,signal,task='generic',parentTrace){
   const parent=parentTrace||diagnostics.trace?.(),trace=parent||diagnostics.logs?.start(task,{...diagnostics.scope?.(),profileId}),owned=!parent;
-  const maxTokens=task==='analysis'||task==='translation'?12000:task==='test'?300:task==='items'?4500:1400;
+  const maxTokens=task==='analysis'||task==='translation'?12000:task==='test'?300:task==='items'?4500:task==='scene'?5000:1400;
   const dataMessage={role:'user',content:JSON.stringify(toModelData(data))};
   const original=[{role:'system',content:system},dataMessage];
   let messages=original,lastError,raw,normalized;
@@ -92,9 +112,15 @@ export function createHost(context,service,worldInfo,diagnostics={}){
     trace?.event('request',attempt?'내용 복구 요청':'연결모델 요청',{task,attempt:attempt+1,profileId,model:service.getProfile(profileId)?.model,maxTokens,messages});
     try{
      const response=await send(profileId,messages,maxTokens,signal);if(signal?.aborted)throw abortError();
-     const content=response?.content??response?.candidates?.[0]?.content;
-     raw=content?.parts?content.parts.filter(part=>!part.thought&&typeof part.text==='string').map(part=>part.text).join(''):content??response?.choices?.[0]?.message?.content??response;
-     trace?.event('response','응답 수신',{task,attempt:attempt+1,raw,usage:response?.usage,finishReason:response?.finish_reason});
+     const received=responseData(response);raw=received.raw;
+     trace?.event('response','응답 수신',{task,attempt:attempt+1,...received});
+     if(/^(?:length|max_tokens|max_output_tokens|model_length)$/i.test(received.finishReason||'')||incompleteJSON(raw)){
+      lastError=Object.assign(Error('응답이 끝까지 생성되지 않았습니다. 기존 자료를 유지합니다.'),{kind:'incomplete',finishReason:received.finishReason});
+      trace?.event('parse','불완전한 응답 · 일부 내용 적용 차단',{attempt:attempt+1,finishReason:received.finishReason},'warn');
+      if(attempt===0){messages=original;continue;}
+      if(task!=='scene')throw lastError;
+      normalized={facts:{changes:{}},outcome:'unusable',adjustments:[],unresolved:[{path:'response',reason:'incomplete response',finishReason:received.finishReason}]};break;
+     }
      let parsed;try{parsed=parseJSON(raw,{array:task==='scene'});}catch(error){if(task!=='scene')throw error;parsed=raw;}
      if(task==='scene'){
       normalized=normalizeSceneResponse(fromModelData(parsed),{names:Object.fromEntries(Object.entries(data.people||{}).map(([who,value])=>[who,value.name]))});

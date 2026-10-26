@@ -212,7 +212,7 @@ const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>mess
  saveProfiles(profiles){cancel();const v=current();if(!v)return;v.b.profiles=profiles;for(const who of ['character','persona'])if(v.b.reportTranslations?.[who]?.signature!==hash(JSON.stringify(profiles[who]?.fields)))delete v.b.reportTranslations?.[who];store.save();ui.refresh();},
  promote(){const v=current();if(!v)return;store.character(v.i.id).profiles=clone(v.b.profiles);store.character(v.i.id).personaKey=v.b.personaKey;store.save();},
  saveOutfit(people){cancel();const v=current();if(!v)return;saveManualOutfit(v.b,people,host.messages(),v.i.chat,settings().displayLimit);store.save();ui.refresh();},
- async testConnection(){return host.request(settings().profileId,'Return only {"ok":true}.',{},new AbortController().signal,'test').then(x=>{if(x.ok!==true)throw Error('연결 확인 응답이 잘못되었습니다.');});},
+ async testConnection(profileId=settings().profileId){return host.request(profileId,'Return only {"ok":true}.',{},new AbortController().signal,'test').then(x=>{if(x.ok!==true)throw Error('연결 확인 응답이 잘못되었습니다.');});},
  remove(kind,bid){cancel();const i=host.identity();if(kind==='all'){store.deleteAll();outputGuard.remove();}else if(i){if(kind==='chat')store.resetChat(i.id,i.chat);if(kind==='branch')store.deleteBranch(i.id,bid||current()?.bid);if(kind==='character')store.deleteCharacter(i.id);}ui.refresh();},
 });
 messageView=createMessageOutfits({base:new URL('.',import.meta.url),context:getContext,state,read:()=>readCurrent(),open:()=>ui.open(),error:error=>ui.error(error),saveView(message,prefix,patch){
@@ -234,6 +234,8 @@ globalThis.kikkiClosetInterceptor=(_chat,_size,abort,type)=>{
 };
 await registerOutfitMacro(getContext,()=>{const v=current();return settings().enabled&&v&&!v.b.suspended&&(!v.b.personaKey||v.b.personaKey===v.i.personaKey)?outfitInjection(savedOutfitForMessages(v.b,host.messages(),v.i.chat)):null;});
 const {eventSource,eventTypes}=host.context();
+for(const key of ['CONNECTION_PROFILE_CREATED','CONNECTION_PROFILE_UPDATED','CONNECTION_PROFILE_DELETED'])if(eventTypes[key])eventSource.on(eventTypes[key],()=>ui.refreshConnectionProfiles());
+window.addEventListener('focus',()=>ui.refreshConnectionProfiles());
 function outgoing(payload,dryRun){if(dryRun)return;const i=host.identity();let messages=host.messages();if(['swipe','regenerate'].includes(prepared?.type)&&messages.at(-1)?.role==='character')messages=messages.slice(0,-1);const valid=prepared&&prepared.revision===revision&&prepared.character===i?.id&&prepared.chat===i?.chat&&prepared.key===(prefixKeys(messages).at(-1)||'root');const content=settings().enabled&&valid?prepared.content:'';const r=injectPayload(payload,content,settings().enabled);injectionError=settings().enabled?(r.malformed?'착장 태그 짝을 확인하세요.':content&&!r.found?'모델 입력에 {{kikki_outfit}} 매크로가 없습니다. 주입 위치를 확인하세요.':''):'';ui.refresh();}
 if(eventTypes.GENERATE_AFTER_DATA)eventSource.on(eventTypes.GENERATE_AFTER_DATA,outgoing);
 const schedule=()=>{

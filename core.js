@@ -1,13 +1,13 @@
 import {needsOutfitRead} from './scene-gate.js';
 import {wardrobeLevel,ownedItems,normalizeTraits,itemTraits,newItemPolicy} from './wardrobe.js';
-import {ensureContexts,normalizeSceneResponse,resolveOutfit,sceneRequest,satisfiesRequest} from './outfit-rules.js';
+import {ensureContexts,normalizeSceneResponse,resolveOutfit,sceneRequest,matchesGeneratedRequest} from './outfit-rules.js';
 
 export const KEY = 'kikki-closet:v1';
 export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'];
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.7';
+export const EXTENSION_VERSION='1.6.8';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -407,18 +407,20 @@ export class Engine {
     const generated=await this.generate({missing:resolved.missing,creationPolicy:matching.newItems,profiles,contexts:Object.fromEntries(Object.keys(profiles).map(who=>[who,resolved.state.people[who].context]))},signal,profileId,trace);
     if(!valid()){trace?.finish('cancelled','취소된 의상 생성 결과 폐기');return null;}
     if(!generated||typeof generated!=='object'||!generated.newItems||typeof generated.newItems!=='object'||Array.isArray(generated.newItems))throw Error('필요한 의상 생성 형식이 맞지 않습니다. 기존 착장은 유지됩니다.');
+    const generatedMatches=[];
     for(const who of ['character','persona']){
      const items=generated.newItems[who]||[],needs=resolved.missing.filter(n=>n.who===who);
      if(!Array.isArray(items)||items.length>needs.length)throw Error('요청하지 않은 의상이 포함됐습니다. 기존 착장은 유지됩니다.');
      const remaining=[...needs];
      for(const value of items){
-      const item=normalizeItem(value),requestId=typeof value?.requestId==='string'?value.requestId.trim():'',n=requestId?remaining.findIndex(need=>need.requestId===requestId&&satisfiesRequest(item,need,resolved.state.people[who].context)):remaining.findIndex(need=>satisfiesRequest(item,need,resolved.state.people[who].context));
-      if(n<0||!item.available)throw Error('생성된 의상이 요청한 종류·용도·핏을 충족하지 못했습니다. 기존 착장은 유지됩니다.');remaining.splice(n,1);
+      const item=normalizeItem(value),requestId=typeof value?.requestId==='string'?value.requestId.trim():'',n=requestId?remaining.findIndex(need=>need.requestId===requestId&&matchesGeneratedRequest(item,need)):remaining.findIndex(need=>matchesGeneratedRequest(item,need));
+      trace?.event('matching','생성 의상 요청 연결',{who,requestId,requested:requestId?remaining.find(need=>need.requestId===requestId):remaining,returned:{category:item.category,name:item.name,color:item.color,brand:item.brand,traits:item.traits},accepted:n>=0&&item.available},n<0||!item.available?'warn':'info');
+      if(n<0||!item.available)throw Error('생성된 의상을 요청과 연결하지 못했습니다. 작업 로그의 의상 매칭을 확인하세요. 기존 착장은 유지됩니다.');const [request]=remaining.splice(n,1);
       if(!koreanDisplay(item.labelKo)||!koreanDisplay(item.brandKo))throw Error('생성된 의상의 한글 표시명이 누락됐습니다. 기존 데이터는 유지됩니다.');
-      item.id='scene-'+branchId();added[who].push(item);wardrobes[who].push(item);
+      item.id='scene-'+branchId();added[who].push(item);wardrobes[who].push(item);generatedMatches.push({request,id:item.id});
      }
     }
-    resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles,matching);
+    resolved=resolveOutfit(baseline,facts,wardrobes,memory,b.profiles,{...matching,generatedMatches});
     trace?.event('matching','생성 의상 매칭 확인',{added:Object.fromEntries(Object.entries(added).map(([who,items])=>[who,items.map(({id,category,name})=>({id,category,name}))])),decisions:resolved.decisions,remaining:resolved.missing});
     if(resolved.missing.length)throw Error('생성된 옷이 현재 조건을 충족하지 못했습니다. 기존 착장은 유지됩니다.');
    }

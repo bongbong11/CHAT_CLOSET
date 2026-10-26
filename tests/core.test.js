@@ -38,7 +38,7 @@ test('생성 프롬프트는 세계관·문화권·SPA·중고 원브랜드를 �
 test('분석된 세계관과 복식 선택지를 보존한다',()=>{const p=normalizeProfile({character:{fields:{'세계관':{value:'Harry Potter AU',certainty:'명시',evidence:'Selected lore'}},wardrobe:[],wardrobeHints:{type:['school robe','casual knit']}}});assert.equal(p.character.fields['세계관'].value,'Harry Potter AU');assert.deepEqual(p.character.wardrobeHints.type,['school robe','casual knit']);});
 test('모델 지시문과 구조 키는 영어이고 한국어 저장 형식을 왕복 변환',()=>{assert.doesNotMatch(ANALYSIS+SCENE,/[가-힣]/);const model=toModelData({character:{fields:{'직업':{value:'학생',certainty:'명시'}},wardrobe:[shoe]}});assert.ok(model.character.fields.occupation);assert.equal(model.character.wardrobe[0].category,'footwear');const stored=fromModelData(model);assert.equal(stored.character.fields['직업'].certainty,'명시');assert.equal(stored.character.wardrobe[0].category,'신발');});
 test('캐릭터 설명·성격 요약과 연결된 로어북 엔트리만 불러옴',async()=>{const context=()=>({characterId:0,characters:[{avatar:'a.png',data:{name:'A',description:'설명',personality:'성격',scenario:'제외',extensions:{world:'책'}}}],powerUserSettings:{}});const world={world_info:{charLore:[]},loadWorldInfo:async()=>({entries:{1:{comment:'사용',content:'내용'},2:{comment:'꺼짐',content:'제외',disable:true}}})};const h=createHost(context,{},world);const sheet=await h.sheet('character');assert.match(sheet.source,/DESCRIPTION:\n설명/);assert.match(sheet.source,/PERSONALITY:\n성격/);assert.doesNotMatch(sheet.source,/제외/);const lore=await h.lore('character');assert.deepEqual(lore.map(x=>x.title),['사용']);});
-test('깨진 JSON은 자동 교정하고 영문 파싱 위치 오류를 노출하지 않음',async()=>{let calls=0;const service={getProfile:()=>({}),validateProfile:()=>{},sendRequest:async()=>({content:++calls===1?'{"ok": true':'{"ok":true}'})};const h=createHost(()=>({}),service,{});assert.deepEqual(await h.request('p','Return JSON.',{},new AbortController().signal,'test'),{ok:true});assert.equal(calls,2);const bad={...service,sendRequest:async()=>({content:'{"bad":'})};const broken=createHost(()=>({}),bad,{});await assert.rejects(()=>broken.request('p','Return JSON.',{},new AbortController().signal,'test'),error=>/두 번 연속/.test(error.message)&&!/position|column|Expected/.test(error.message));});
+test('깨진 JSON은 자동 교정하고 영문 파싱 위치 오류를 노출하지 않음',async()=>{let calls=0;const service={getProfile:()=>({}),validateProfile:()=>{},sendRequest:async()=>({content:++calls===1?'{"ok": true':'{"ok":true}'})};const h=createHost(()=>({}),service,{});assert.deepEqual(await h.request('p','Return JSON.',{},new AbortController().signal,'test'),{ok:true});assert.equal(calls,2);const bad={...service,sendRequest:async()=>({content:'{"bad":'})};const broken=createHost(()=>({}),bad,{});await assert.rejects(()=>broken.request('p','Return JSON.',{},new AbortController().signal,'test'),error=>error.kind==='incomplete'&&!/position|column|Expected/.test(error.message));});
 
 test('장면 표기 차이와 로컬에서 읽는 텍스트는 모델을 재호출하지 않는다',async()=>{
  for(const content of ['{"Changes":{"CHAR":{"Context":{"LOCATION":"Home.","PHASE":"rest"},"Actions":null}},"sceneKo":{"place":"Main room"}}','Character:\nLocation: home\nPhase: resting']){
@@ -118,4 +118,30 @@ test('콘솔 그룹 미지원과 출력 실패도 오류 원문 복사와 판독
  assert.equal(calls.length,1);assert.match(calls[0][0],/오류 1/);assert.equal(calls[0][1].events[1].data.raw,'original');assert.match(logs.copy(),/connection failure/);
  const broken=new DiagnosticLog({console:{groupCollapsed(){throw Error('console unavailable');}}});
  assert.doesNotThrow(()=>broken.start('storage').finish('saved','완료'));assert.equal(broken.list()[0].outcome,'saved');
+});
+
+test('장면은 5000토큰과 원본 응답을 사용하고 한도 초과 시 원자료로 한 번만 다시 판독한다',async()=>{
+ const seen=[],logs=new DiagnosticLog({console:null}),payload={people:{character:{name:'C'},persona:{name:'P'}},messages:[{role:'character',content:'Both people arrived.'}]};
+ const service={getProfile:()=>({model:'gemini'}),validateProfile(){},async sendRequest(id,messages,tokens,options){seen.push({messages,tokens,options});return seen.length===1?{candidates:[{content:{parts:[{thought:true,text:'do not retain reasoning'},{text:'{"changes":{"character":'}]},finishReason:'MAX_TOKENS'}],usageMetadata:{thoughtsTokenCount:1343,candidatesTokenCount:53}}:{choices:[{message:{content:'{"changes":{"character":{"context":{"location":"outside"}},"persona":{"context":{"location":"outside"}}}}'},finish_reason:'stop'}],usage:{completion_tokens:70}};}};
+ const result=await createHost(()=>({}),service,{},{logs}).request('p',SCENE,payload,new AbortController().signal,'scene');
+ assert.equal(seen.length,2);assert.ok(seen.every(call=>call.tokens===5000&&call.options.extractData===false));assert.deepEqual(seen[0].messages,seen[1].messages);assert.equal(seen[1].messages[0].content,SCENE);assert.deepEqual(JSON.parse(seen[1].messages[1].content),payload);
+ assert.equal(result.facts.changes.persona.context.location,'outside');const events=logs.list()[0].events;assert.ok(events.some(e=>e.stage==='response'&&e.data.finishReason==='MAX_TOKENS'&&e.data.usage.thoughtsTokenCount===1343));assert.doesNotMatch(logs.copy(),/do not retain reasoning/);
+});
+
+test('명시된 한도 초과와 메타정보 없는 잘린 JSON 모두 일부 복구를 적용하지 않는다',async()=>{
+ for(const metadata of [true,false]){
+  let count=0;const seen=[],service={getProfile:()=>({}),validateProfile(){},async sendRequest(id,messages){count++;seen.push(messages);return metadata?{choices:[{message:{content:'{"changes":{"character":{"actions":[{"op":"remove","category":"bottom","name":"jeans"}]}}}'},finish_reason:'length'}]}:{content:'{"changes":{"character":{"actions":[{"op":"remove"'};}};
+  const host=createHost(()=>({}),service,{}),h=setup((_s,data,signal)=>host.request('p',SCENE,data,signal,'scene')),before=structuredClone(h.s.branch('c',h.id));
+  assert.equal(await h.e.read('c',h.id,[msg('He changed clothes.')]),null);assert.equal(count,2);assert.deepEqual(seen[0],seen[1]);assert.deepEqual(h.s.branch('c',h.id),before);
+ }
+});
+
+test('메타정보 없는 잘린 응답 뒤 전체 응답이 오면 페르소나를 포함해 해석한다',async()=>{
+ let count=0;const seen=[],service={getProfile:()=>({}),validateProfile(){},async sendRequest(id,messages){seen.push(messages);return {content:++count===1?'{"changes":{"character":':'{"changes":{"persona":{"context":{"location":"home"}}}}'};}};
+ const result=await createHost(()=>({}),service,{}).request('p',SCENE,{people:{persona:{name:'P'}}},new AbortController().signal,'scene');assert.equal(count,2);assert.deepEqual(seen[0],seen[1]);assert.equal(result.facts.changes.persona.context.location,'home');
+});
+
+test('원본 text completion 응답과 usage도 기존 JSON 계약으로 읽는다',async()=>{
+ const service={getProfile:()=>({}),validateProfile(){},async sendRequest(){return {results:[{text:'{"ok":true}'}],usage:{completion_tokens:4}};}};
+ assert.deepEqual(await createHost(()=>({}),service,{}).request('p','Return JSON.',{},new AbortController().signal,'test'),{ok:true});
 });

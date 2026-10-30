@@ -61,6 +61,15 @@ test('한 인물의 선택 종류만 새 목록으로 교체하고 현재 옷과
  assert.deepEqual(b.current,before);assert.deepEqual(b.profiles.persona,other);assert.deepEqual(b.profiles.character.wardrobe.map(i=>i.id),['pants','shoe','new-top']);assert.deepEqual(b.extra.character.map(i=>i.id),['shirt']);assert.deepEqual(b.checkpoints,{});assert.deepEqual(b.history,[]);assert.deepEqual(b.outfitMemory.character.beforeUndress,[]);assert.deepEqual(b.outfitMemory.character.lastDressed,['shirt','pants']);
  assert.ok(!JSON.stringify(b).includes('old-top'));assert.ok(!JSON.stringify(b).includes('extra-top'));
 });
+
+test('옷장 교체도 방별 최신 착장을 보존하며 폐기한 미착용 재고는 복원하지 않는다',()=>{
+ const s=new Store({getItem:()=>null,setItem(){}});s.createCharacter('c','C');const b=s.branch('c',s.createBranch('c','B'));b.current=outfit();b.profiles.character={wardrobe:[shirt,pants,shoe]};
+ const other=outfit(),old=garment('discarded','상의');other.people.character.items=[{...shirt,id:'other-worn'}];
+ b.display.heads={a:{key:'a',stale:true},b:{key:'b',stale:false}};
+ b.checkpoints={a:{state:structuredClone(b.current),extra:{character:[old],persona:[]},history:[],outfits:[]},b:{state:other,extra:{character:[old],persona:[]},history:[],outfits:[]},unused:{state:outfit()}};
+ replaceWardrobeCategory(b,'character','상의',[garment('new','상의')]);
+ assert.deepEqual(Object.keys(b.checkpoints),['a','b']);assert.equal(b.checkpoints.b.state.people.character.items[0].id,'other-worn');assert.deepEqual(b.checkpoints.b.extra.character.map(item=>item.id),['other-worn']);assert.doesNotMatch(JSON.stringify(b),/discarded/);
+});
 import {toModelData,fromModelData} from '../model-schema.js';
 test('생성한 영어 의상과 한글 표시명은 같이 저장하고 모든 모델 요청·주입에서 표시명은 제외',()=>{
  const g={...garment('g','상의','Oxford shirt'),labelKo:'남색 옥스퍼드 셔츠',brandKo:'유니클로'};

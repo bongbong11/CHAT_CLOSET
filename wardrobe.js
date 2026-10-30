@@ -116,5 +116,14 @@ export function replaceWardrobeCategory(branch,who,category,items,exception){
  for(const memory of [branch.outfitMemory,branch.baseMemory])if(memory?.[who])for(const k of ['lastDressed','beforeUndress'])memory[who][k]=(memory[who][k]||[]).filter(id=>allowed.has(id));
  branch.base=structuredClone(branch.current);branch.baseExtra=structuredClone(branch.extra);
  branch.baseMemory=structuredClone(branch.outfitMemory||{});
- branch.checkpoints={};branch.keys=[];branch.history=[];branch.outfits=[];
+ const retained=new Set(Object.values(branch.display?.heads||{}).map(head=>head.key));
+ branch.checkpoints=Object.fromEntries(Object.entries(branch.checkpoints||{}).filter(([key])=>retained.has(key)));
+ for(const cp of Object.values(branch.checkpoints)){
+  cp.extra??={character:[],persona:[]};
+  cp.extra[who]=mergeWardrobe((cp.extra[who]||[]).filter(item=>item.category!==category),cp.state.people[who].items.filter(item=>item.category===category));
+  const owned=new Set(ownedItems({...branch,extra:cp.extra},who).map(item=>item.id));
+  if(cp.outfitMemory?.[who])for(const key of ['lastDressed','beforeUndress'])cp.outfitMemory[who][key]=(cp.outfitMemory[who][key]||[]).filter(id=>owned.has(id));
+  cp.history=[];cp.outfits=[];
+ }
+ branch.keys=[];branch.history=[];branch.outfits=[];
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {Store,Engine,KEY,emptyState,recordDisplay,savedDisplay,pruneDisplayChat,prefixKeys,compactStoredData,updateOutfitMemory,restoreBranchForMessages,saveManualOutfit,savedOutfitForMessages,outfitInjection,reconcileDisplay,trustedTimeline,trimDisplay,displayLimit} from '../core.js';
+import {Store,Engine,KEY,emptyState,recordDisplay,savedDisplay,pruneDisplayChat,prefixKeys,compactStoredData,updateOutfitMemory,restoreBranchForMessages,saveManualOutfit,savedOutfitForMessages,outfitInjection,reconcileDisplay,trustedTimeline,trimDisplay,displayLimit,visibleMessages} from '../core.js';
 import {needsOutfitRead} from '../scene-gate.js';
 import {registerOutfitMacro,injectPayload} from '../host.js';
 import {requireEnglishProfile,toModelData} from '../model-schema.js';
@@ -243,22 +243,22 @@ test('새로고침에서 유효한 현재 판독은 최신 답변에 연결하�
  const loaded=new Store(storage),restored=loaded.branch('c',bid);assert.ok(reconcileDisplay(restored,'chat',messages,1));assert.ok(savedDisplay(restored,'chat',messages[0],prefixKeys(messages)[0]));assert.deepEqual(trustedTimeline(restored,messages,'chat').state,b.current);
 });
 
-test('삭제·수정·하이드는 무효 상태를 주입하지 않고 다음 판독은 신체·탈의 기억을 이어받지 않는다',async()=>{
+test('삭제·수정·하이드는 답변 기록만 정리하고 최신 신체·착장 기준을 유지한다',async()=>{
  const s=new Store(memory());s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'chat');b.base=home();b.current=home();b.profiles.character={wardrobe:owned.character};
  const before=[message(1),message(2,'He undresses.')];const e=new Engine(s,async()=>({changes:{character:{context:{conditions:['Pregnant']},actions:[{op:'nude'}]}}}));await e.read('c',bid,before,{chatId:'chat'});
- const remaining=[before[0]];reconcileDisplay(b,'chat',remaining,1);assert.equal(savedOutfitForMessages(b,remaining,'chat'),null);assert.equal(outfitInjection(savedOutfitForMessages(b,remaining,'chat')),'');
- restoreBranchForMessages(b,remaining,'chat');assert.deepEqual(b.current.people.character.context.conditions,[]);assert.deepEqual(b.outfitMemory,{});
+ const confirmed=structuredClone(b.current),savedMemory=structuredClone(b.outfitMemory),remaining=[before[0]];reconcileDisplay(b,'chat',remaining,1);assert.deepEqual(savedOutfitForMessages(b,remaining,'chat'),confirmed);assert.equal(outfitInjection(savedOutfitForMessages(b,remaining,'chat')),'');
+ restoreBranchForMessages(b,remaining,'chat');assert.deepEqual(b.current.people.character.context.conditions,['Pregnant']);assert.deepEqual(b.outfitMemory,savedMemory);
  let request;const next=new Engine(s,async(_system,data)=>{request=data;return {changes:{}};});await next.read('c',bid,[...remaining,message(3)],{chatId:'chat',gate:true});
- assert.equal(request.people.character.nude,false);assert.deepEqual(request.people.character.worn,[]);assert.equal(request.people.character.context.conditions,undefined);assert.ok(trustedTimeline(b,[...remaining,message(3)],'chat'));
- const changed=[{...remaining[0],content:'Edited'},message(3)];reconcileDisplay(b,'chat',changed,1);assert.equal(savedOutfitForMessages(b,changed,'chat'),null);
+ assert.equal(request.people.character.nude,true);assert.deepEqual(request.people.character.worn,[]);assert.deepEqual(request.people.character.context.conditions,['Pregnant']);assert.ok(trustedTimeline(b,[...remaining,message(3)],'chat'));
+ const changed=[{...remaining[0],content:'Edited'},message(3)];reconcileDisplay(b,'chat',changed,1);assert.ok(savedOutfitForMessages(b,changed,'chat'));assert.equal(trustedTimeline(b,changed,'chat').detached,true);
 });
 
-test('사용자 입력 추가는 유효 착장을 유지하고 리롤은 보관된 이전 답변이 있을 때만 참고한다',async()=>{
+test('사용자 입력 추가와 리롤은 표시 개수에 관계없이 최신 착장을 유지한다',async()=>{
  const s=new Store(memory());s.data.settings.displayLimit=2;s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);b.base=home();b.current=home();
  const messages=[message(1)],e=new Engine(s,async()=>({changes:{}}));await e.read('c',bid,messages,{chatId:'chat'});messages.push(message(2));await e.read('c',bid,messages,{chatId:'chat'});
  assert.ok(savedOutfitForMessages(b,[...messages,{id:'u',role:'user',content:'Next'}],'chat'));
- assert.ok(savedOutfitForMessages(b,messages.slice(0,-1),'chat'));trimDisplay(b,1);assert.equal(savedOutfitForMessages(b,messages.slice(0,-1),'chat'),null);
- const alt=[messages[0],{...messages[1],content:'Alternate',swipe:1}];reconcileDisplay(b,'chat',alt,1);assert.equal(savedOutfitForMessages(b,alt,'chat'),null);
+ assert.ok(savedOutfitForMessages(b,messages.slice(0,-1),'chat'));trimDisplay(b,1);assert.ok(savedOutfitForMessages(b,messages.slice(0,-1),'chat'));
+ const alt=[messages[0],{...messages[1],content:'Alternate',swipe:1}];reconcileDisplay(b,'chat',alt,1);assert.deepEqual(savedOutfitForMessages(b,alt,'chat').people.character.items,b.current.people.character.items);
 });
 
 
@@ -267,11 +267,11 @@ test('판독 중 여러 답변 삭제 후 늦은 응답은 버리고 취향과 �
  const first=[message(1)];await new Engine(s,async()=>({changes:{}})).read('c',bid,first,{chatId:'chat'});
  let release;const engine=new Engine(s,()=>new Promise(resolve=>release=resolve));const work=engine.read('c',bid,[...first,message(2)],{chatId:'chat',force:true});
  reconcileDisplay(b,'chat',[],1);engine.cancel();release({changes:{character:{actions:[{op:'nude'}]}}});assert.equal(await work,null);
- assert.equal(savedOutfitForMessages(b,[],'chat'),null);assert.equal(b.profiles.character.fields.style.value,'Casual');assert.deepEqual(b.profiles.character.wardrobe,owned.character);
+ assert.equal(savedOutfitForMessages(b,[],'chat').people.character.nude,false);assert.equal(b.profiles.character.fields.style.value,'Casual');assert.deepEqual(b.profiles.character.wardrobe,owned.character);
  assert.equal(Object.keys(b.display.chats.chat).length,0);assert.equal(Object.keys(b.display.snapshots).length,0);
 });
 
-test('마지막 사용자 입력을 삭제하면 답변 메모와 주입을 같은 유효 체크포인트로 맞춘다',async()=>{
+test('마지막 사용자 입력 삭제로 최신 확정 착장을 이전 체크포인트로 되돌리지 않는다',async()=>{
  const s=new Store(memory());s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'chat');b.base=home();b.current=home();b.profiles.character={wardrobe:owned.character};
  const reply=message(1),messages=[reply],e=new Engine(s,async()=>({changes:{}}));await e.read('c',bid,messages,{chatId:'chat'});
  const changed=[reply,{id:'u',role:'user',content:'He removes all his clothes.'}];
@@ -279,7 +279,7 @@ test('마지막 사용자 입력을 삭제하면 답변 메모와 주입을 같�
  assert.equal(savedDisplay(b,'chat',reply,prefixKeys(messages)[0]).state.people.character.nude,true);
  reconcileDisplay(b,'chat',messages,1);restoreBranchForMessages(b,messages,'chat');
  const shown=savedDisplay(b,'chat',reply,prefixKeys(messages)[0]).state;
- assert.equal(shown.people.character.nude,false);assert.deepEqual(shown.people.character.items,b.current.people.character.items);
+ assert.equal(shown.people.character.nude,true);assert.deepEqual(shown.people.character.items,b.current.people.character.items);
  assert.equal(outfitInjection(shown),outfitInjection(savedOutfitForMessages(b,messages,'chat')));
 });
 
@@ -291,6 +291,62 @@ test('숫자로만 된 표시 키도 최근 순서대로 보관하고 반복 복
  const s=new Store(memory());s.createCharacter('c','C');const bid=s.createBranch('c','B'),branch=s.branch('c',bid);
  await new Engine(s,async()=>({changes:{}})).read('c',bid,messages,{chatId:'chat'});
  assert.equal(reconcileDisplay(branch,'chat',messages,1),false);assert.equal(reconcileDisplay(branch,'chat',messages,1),false);
+});
+
+test('보관 개수는 성공적으로 저장한 착장 기준이며 미판독 답변이 기존 기록을 밀어내지 않는다',async()=>{
+ const storage=memory(),s=new Store(storage);s.data.settings.displayLimit=3;s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'chat');b.base=home();b.current=home();
+ const messages=[],e=new Engine(s,async()=>({changes:{}}));
+ for(let n=0;n<3;n++){messages.push(...visibleMessages([{send_date:String(n),is_user:false,mes:'He smiles.'}]));await e.read('c',bid,messages,{chatId:'chat'});}
+ const saved=structuredClone(b.display.chats.chat);
+ messages.push(...visibleMessages([{send_date:'pending-1',is_user:false,mes:'He smiles.'},{send_date:'pending-2',is_user:false,mes:'He smiles.'}]));reconcileDisplay(b,'chat',messages,3);
+ assert.deepEqual(b.display.chats.chat,saved);s.save();
+ const loaded=new Store(storage),restored=loaded.branch('c',bid);reconcileDisplay(restored,'chat',messages,3);
+ assert.deepEqual(restored.display.chats.chat,saved);
+ const raw=messages.map(m=>({send_date:m.id,is_user:false,mes:m.content}));pruneDisplayChat(restored,'chat',raw,3);assert.deepEqual(restored.display.chats.chat,saved);
+ await new Engine(loaded,async()=>({changes:{}})).read('c',bid,messages,{chatId:'chat'});
+ const keys=prefixKeys(messages);assert.equal(savedDisplay(restored,'chat',messages[0],keys[0]),null);assert.ok(savedDisplay(restored,'chat',messages[1],keys[1]));assert.ok(savedDisplay(restored,'chat',messages.at(-1),keys.at(-1)));
+});
+
+test('숫자 해시 체크포인트가 80개를 넘어도 최신 수동 착장·현재 흐름은 정리되지 않는다',()=>{
+ const s=new Store(memory());s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'chat');b.current=home();b.profiles.character={wardrobe:owned.character};
+ b.checkpoints=Object.fromEntries(Array.from({length:80},(_,i)=>['old-'+i,{state:home(),extra:{character:[],persona:[]},history:[],outfits:[],outfitMemory:{}}]));
+ let messages;
+ for(let n=0;n<100000;n++){const candidate=[message('numeric-'+n)];if(/^[1-9][0-9]{0,8}$/.test(prefixKeys(candidate)[0])){messages=candidate;break;}}
+ assert.ok(messages,'numeric checkpoint fixture');
+ saveManualOutfit(b,structuredClone(b.current.people),messages,'chat',3);
+ const key=prefixKeys(messages)[0];assert.ok(b.checkpoints[key]);assert.equal(Object.keys(b.checkpoints).length,80);assert.ok(trustedTimeline(b,messages,'chat'));
+ const compact=compactStoredData(s.data).data.characters.c.branches[bid];assert.ok(compact.checkpoints[key]);
+ assert.match(outfitInjection(savedOutfitForMessages(compact,messages,'chat')),/Oxford shirt/);
+});
+
+test('100회 리롤·새로고침·정리에도 최신 착장과 판독을 유지하고 명시 변경만 갱신한다',async()=>{
+ for(const limit of [1,3,20]){
+  const storage=memory();let s=new Store(storage);s.data.settings.displayLimit=limit;s.createCharacter('c','C');const bid=s.createBranch('c','B');s.bind('c',bid,'chat');let b=s.branch('c',bid);b.current=home();b.profiles.character={wardrobe:owned.character};b.current.people.character.context.conditions=['Arm injury'];
+  const original=[message('reply','At home.')];saveManualOutfit(b,structuredClone(b.current.people),original,'chat',limit);const confirmed=structuredClone(b.current),key=b.display.heads.chat.key;
+  for(let i=1;i<=100;i++){
+   const messages=[message('reply','Alternate '+i,i)];reconcileDisplay(b,'chat',messages,limit);restoreBranchForMessages(b,messages,'chat');s.save();s=new Store(storage);b=s.branch('c',bid);
+   assert.deepEqual(b.current,confirmed);assert.deepEqual(savedOutfitForMessages(b,messages,'chat'),confirmed);assert.equal(Object.keys(b.display.chats.chat).length,0);assert.ok(b.checkpoints[key]);
+  }
+  s.data=compactStoredData(s.data).data;b=s.branch('c',bid);assert.deepEqual(savedOutfitForMessages(b,[],'chat'),confirmed);
+  let request;const e=new Engine(s,async(_system,data)=>{request=data;return {changes:{character:{actions:[{op:'adjust',category:'상의',name:'Oxford shirt',wearing:'sleeves rolled',wearingKo:'소매 걷음'}]}}};});
+  const next=[message('reply','He rolls up his sleeves.',101)];await e.read('c',bid,next,{chatId:'chat',gate:true});
+  assert.deepEqual(request.people.character.worn.map(i=>i.name),confirmed.people.character.items.map(i=>i.name));assert.deepEqual(request.people.character.context.conditions,['Arm injury']);
+  assert.deepEqual(b.current.people.character.items.map(i=>i.id),confirmed.people.character.items.map(i=>i.id));assert.equal(b.current.people.character.items.find(i=>i.id==='top').wearing,'sleeves rolled');
+  s.resetChat('c','chat');assert.equal(s.branch('c',bid).suspended,true);assert.equal(outfitInjection(savedOutfitForMessages(s.branch('c',bid),next,'chat')),'');assert.deepEqual(s.branch('c',bid).display.heads,undefined);
+ }
+});
+
+test('다른 채팅·브랜치에는 리롤 보존 상태를 전달하지 않는다',()=>{
+ const s=new Store(memory());s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'a');b.current=home();b.profiles.character={wardrobe:owned.character};saveManualOutfit(b,structuredClone(b.current.people),[message('a')],'a');s.bind('c',bid,'b');
+ assert.equal(savedOutfitForMessages(b,[message('b')],'b'),null);assert.ok(savedOutfitForMessages(b,[message('changed','Rerolled',1)],'a'));
+ const fresh=s.createBranch('c','New');assert.equal(outfitInjection(savedOutfitForMessages(s.branch('c',fresh),[message('new')],'new')),'');
+});
+
+test('다른 방에서 100회 판독해도 리롤로 분리된 방의 최신 기준점은 정리되지 않는다',async()=>{
+ const s=new Store(memory());s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'a');s.bind('c',bid,'b');b.current=home();b.profiles.character={wardrobe:owned.character};
+ const first=[message('first')];saveManualOutfit(b,structuredClone(b.current.people),first,'a');const key=b.display.heads.a.key,confirmed=structuredClone(b.current),alternate=[message('first','Alternate',1)];reconcileDisplay(b,'a',alternate,1);
+ const messages=[],engine=new Engine(s,async()=>({changes:{}}));for(let i=0;i<100;i++){messages.push(message('other-'+i));await engine.read('c',bid,messages,{chatId:'b',gate:true});}
+ const compact=compactStoredData(s.data).data.characters.c.branches[bid];assert.equal(Object.keys(compact.checkpoints).length,80);assert.ok(compact.checkpoints[key]);assert.deepEqual(savedOutfitForMessages(compact,alternate,'a'),confirmed);
 });
 
 

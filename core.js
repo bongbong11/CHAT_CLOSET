@@ -7,7 +7,7 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.9';
+export const EXTENSION_VERSION='1.6.10';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -73,7 +73,7 @@ export function compactStoredData(source){
  for(const character of Object.values(data.characters))for(const branch of Object.values(character.branches)){
   for(const who of ['character','persona'])if(branch.reportTranslations?.[who]&&(!branch.profiles?.[who]||branch.reportTranslations[who].signature!==hash(JSON.stringify(branch.profiles[who].fields)))){delete branch.reportTranslations[who];removed.translations++;}
   for(const [key,limit] of [['history',5],['outfits',10]])if(Array.isArray(branch[key])&&branch[key].length>limit){removed[key]+=branch[key].length-limit;branch[key]=branch[key].slice(-limit);}
-  if(branch.checkpoints){const keys=Object.keys(branch.checkpoints);for(const key of keys.slice(0,Math.max(0,keys.length-80))){delete branch.checkpoints[key];removed.checkpoints++;}}
+  removed.checkpoints+=trimCheckpoints(branch);
   removed.display+=trimDisplay(branch,data.settings?.displayLimit);
  }
  return {data,removed,total:Object.values(removed).reduce((sum,n)=>sum+n,0)};
@@ -131,20 +131,38 @@ export function trimDisplay(branch,limit=1){
 }
 export function pruneDisplayChat(branch,chatId,chat,limit=1){
  const records=branch?.display?.chats?.[chatId];if(!records)return 0;
- const messages=visibleMessages(chat),keys=prefixKeys(messages),live=new Map(messages.flatMap((message,i)=>message.role==='character'?[[displayKey(message),keys[i]]]:[]).slice(-displayLimit(limit)));
+ const messages=visibleMessages(chat),keys=prefixKeys(messages),live=new Map(messages.flatMap((message,i)=>message.role==='character'?[[displayKey(message),keys[i]]]:[]));
  let count=0;for(const [key,record] of Object.entries(records))if(live.get(key)!==record.prefix){delete records[key];count++;}
- return count+pruneDisplaySnapshots(branch);
+ return count+trimDisplay(branch,limit);
 }
-// A small per-chat cursor validates the current flow; it never stores another outfit copy.
+// Hash keys can be integer-like: object enumeration is not chronological.
+export function trimCheckpoints(branch){
+ const entries=Object.entries(branch.checkpoints||{});if(entries.length<=80)return 0;
+ const active=branch.keys?.at(-1),heads=new Set(Object.values(branch.display?.heads||{}).map(head=>head.key));
+ const pinned=new Set([active,...heads].filter(key=>branch.checkpoints[key]));
+ const displayed=new Set(Object.values(branch.display?.chats||{}).flatMap(records=>Object.values(records).map(record=>record.prefix)));
+ const priority=key=>key===active?3:heads.has(key)?2:displayed.has(key)?1:0;
+ const kept=new Set(entries.map(([key,cp],i)=>({key,order:cp.order??i+1})).sort((a,b)=>priority(b.key)-priority(a.key)||b.order-a.order).slice(0,Math.max(80,pinned.size)).map(row=>row.key));
+ for(const [key] of entries)if(!kept.has(key))delete branch.checkpoints[key];
+ return entries.length-kept.size;
+}
+export function saveCheckpoint(branch,key,checkpoint){
+ branch.checkpoints??={};
+ const order=Math.max(0,...Object.values(branch.checkpoints).map((cp,i)=>cp.order??i+1))+1;
+ branch.checkpoints[key]={...checkpoint,order};trimCheckpoints(branch);
+}
+// The per-chat head also keeps the last confirmed state across rerolls and edits.
 export function trustedTimeline(branch,messages,chatId){
  if(!branch)return null;
  const keys=prefixKeys(messages),head=branch.display?.heads?.[chatId];
  const fromKey=key=>{const index=keys.indexOf(key),checkpoint=branch.checkpoints?.[key];return index>=0&&checkpoint?{state:checkpoint.state,checkpoint,index,key}:null;};
- if(head&&!head.stale){if(head.key==='root')return {state:branch.base,checkpoint:null,index:-1,key:'root'};const saved=fromKey(head.key);if(saved)return saved;}
+ const retained=key=>{const checkpoint=branch.checkpoints?.[key];return checkpoint?{state:checkpoint.state,checkpoint,index:-1,key,detached:true}:null;};
+ if(head){if(head.key==='root')return {state:branch.base,checkpoint:null,index:-1,key:'root'};const saved=fromKey(head.key)||retained(head.key);if(saved)return saved;}
  const last=messages.findLastIndex(message=>message.role==='character');
  if(last>=0&&savedDisplay(branch,chatId,messages[last],keys[last])){const saved=fromKey(keys[last]);if(saved)return saved;}
  if(!head){
-  const saved=fromKey(branch.keys?.at(-1));if(saved)return saved;
+  const legacy=!Object.keys(branch.display?.heads||{}).length&&branch.links?.length===1;
+  const saved=fromKey(branch.keys?.at(-1))||(legacy?retained(branch.keys?.at(-1)):null);if(saved)return saved;
   if(!branch.keys?.length&&!Object.keys(branch.checkpoints||{}).length)return {state:branch.base,checkpoint:null,index:-1,key:'root'};
  }
  return null;
@@ -154,14 +172,14 @@ export function reconcileDisplay(branch,chatId,messages,limit=1){
  branch.display??={chats:{},snapshots:{}};
  const before=JSON.stringify(branch.display),timeline=trustedTimeline(branch,messages,chatId);
  // Root is a deliberate new branch base, not a fallback after deleting all messages.
- if(timeline?.key!=='root'){branch.display.heads??={};branch.display.heads[chatId]=timeline?{key:timeline.key,stale:false}:{key:branch.display.heads[chatId]?.key||'',stale:true};}
+ if(timeline?.key!=='root'){branch.display.heads??={};branch.display.heads[chatId]=timeline?{key:timeline.key,stale:!!timeline.detached}:{key:branch.display.heads[chatId]?.key||'',stale:true};}
  const records=branch.display.chats[chatId]||{};
  const last=messages.findLastIndex(message=>message.role==='character');
- // A manual read can include a trailing user input. If that input is deleted,
- // align the memo with the same surviving checkpoint used by the macro.
- if(timeline&&last>=0&&timeline.index>=last)recordDisplay(branch,chatId,messages,timeline.state,limit);
+ // Only an aligned checkpoint can recreate a reply record. Detached latest state
+ // remains the baseline without claiming that the changed reply was already read.
+ if(timeline&&!timeline.detached&&last>=0&&timeline.index>=last)recordDisplay(branch,chatId,messages,timeline.state,limit);
  const keys=prefixKeys(messages);
- const live=new Map(messages.flatMap((message,i)=>message.role==='character'?[[displayKey(message),keys[i]]]:[]).slice(-displayLimit(limit)));
+ const live=new Map(messages.flatMap((message,i)=>message.role==='character'?[[displayKey(message),keys[i]]]:[]));
  for(const [key,record] of Object.entries(records))if(live.get(key)!==record.prefix)delete records[key];
  trimDisplay(branch,limit);
  return before!==JSON.stringify(branch.display);
@@ -204,8 +222,7 @@ export function saveManualOutfit(branch,people,messages,chatId,limit=1){
  branch.outfitMemory=updateOutfitMemory(branch.outfitMemory,branch.current,next);branch.current=next;
  branch.keys=prefixKeys(messages);const last=branch.keys.at(-1);
  if(last){
-  branch.checkpoints[last]={state:clone(next),extra:clone(branch.extra),history:clone(branch.history),outfits:clone(branch.outfits),outfitMemory:clone(branch.outfitMemory)};
-  for(const stale of Object.keys(branch.checkpoints).slice(0,-80))delete branch.checkpoints[stale];
+  saveCheckpoint(branch,last,{state:clone(next),extra:clone(branch.extra),history:clone(branch.history),outfits:clone(branch.outfits),outfitMemory:clone(branch.outfitMemory)});
  }else{branch.base=clone(next);branch.baseExtra=clone(branch.extra);branch.baseMemory=clone(branch.outfitMemory);}
  branch.display??={chats:{},snapshots:{}};branch.display.heads??={};branch.display.heads[chatId]={key:last||'root',stale:false};
  recordDisplay(branch,chatId,messages,next,limit);
@@ -367,24 +384,26 @@ export class Engine {
   for(let i=keys.length-1;i>=0;i--)if(b.checkpoints[keys[i]]&&(!chatId||timeline?.key===keys[i])){
    const cp=b.checkpoints[keys[i]];baseline=ensureContexts(clone(cp.state));extra=clone(cp.extra);history=clone(cp.history);outfits=clone(cp.outfits);memory=clone(cp.outfitMemory||memoryFromStates([b.base,...cp.history,cp.state]));start=i+1;break;
   }
+  if(timeline?.detached){const cp=timeline.checkpoint;baseline=ensureContexts(clone(cp.state));extra=clone(cp.extra||b.extra);history=clone(cp.history||[]);outfits=clone(cp.outfits||[]);memory=clone(cp.outfitMemory||memoryFromStates([cp.state]));start=0;}
   if(chatId&&!timeline){baseline=emptyState();extra=clone(b.extra);history=[];outfits=[];memory={};start=0;}
   const added={character:[],persona:[]};let state=baseline;
   const environmentStart=recentTurnStart(messages,this.store.data.settings.chatTurns),collect=list=>Object.assign({},...list.map(message=>readEnvironment(message.content)));
   const previousEnvironment=collect(messages.slice(environmentStart,start)),freshEnvironment=collect(messages.slice(Math.max(environmentStart,start)));
   const unconfirmed=key=>['character','persona'].every(who=>baseline.people[who].context[key]===null||baseline.people[who].context[key]==='unknown');
-  const environmentEvidence=force||start===0?collect(messages.slice(environmentStart)):{...Object.fromEntries(Object.entries(previousEnvironment).filter(([key])=>unconfirmed(key))),...Object.fromEntries(Object.entries(freshEnvironment).filter(([key,value])=>value!==previousEnvironment[key]||unconfirmed(key)))};
-  const needsRead=force||chatId&&!timeline||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
+  const environmentEvidence=timeline?.detached?collect(messages.slice(Math.max(environmentStart,messages.findLastIndex(message=>message.role==='character')))):force||start===0?collect(messages.slice(environmentStart)):{...Object.fromEntries(Object.entries(previousEnvironment).filter(([key])=>unconfirmed(key))),...Object.fromEntries(Object.entries(freshEnvironment).filter(([key,value])=>value!==previousEnvironment[key]||unconfirmed(key)))};
+  const needsRead=force||chatId&&(!timeline||timeline.detached)||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
   const attemptKey=JSON.stringify([id,bid,chatId,key,profileId,epoch]);
   if(!force&&this.attempts.has(attemptKey)){trace?.finish('unusable','같은 응답의 자동 재시도 생략',{reason:this.attempts.get(attemptKey)});return null;}
-  trace?.event('gate',needsRead?'새 장면 판독':'변화 후보 없음 · 착장 유지',{force,start,messageCount:messages.length,chatId,names});
+  trace?.event('gate',needsRead?'새 장면 판독':'변화 후보 없음 · 착장 유지',{force,start,messageCount:messages.length,chatId,names,baseline:timeline?.detached?'last-confirmed':'aligned'});
 
   if(needsRead){
    this.controller=new AbortController();const signal=this.controller.signal;
    const valid=()=>!signal.aborted&&serial===this.serial&&epoch===this.store.epoch&&this.store.branch(id,bid)===b&&isCurrent();
-   const {windowStart,evidenceStart,contextStart,mode}=sceneReadWindow(messages,start,this.store.data.settings.chatTurns,force);
+   const recheck=force||!!timeline?.detached;
+   const {windowStart,evidenceStart,contextStart,mode:readMode}=sceneReadWindow(messages,start,this.store.data.settings.chatTurns,recheck),mode=timeline?.detached&&!force?'retained':readMode;
    const request=sceneRequest(baseline,messages.slice(evidenceStart),messages.slice(contextStart,evidenceStart),names);
-   if(force)request.reread=true;
-   trace?.event('context','현재 상황 판독 범위',{mode,reread:force,maxTurns:this.store.data.settings.chatTurns,windowStart,contextStart,evidenceStart,latestEvidence:request.messages.map(({id,role,swipe,content})=>({id,role,swipe,characters:content.length,hasInfoBlock:/<[^>]*(?:info|status)|(?:location|loc|장소|위치)\s*[:：]/i.test(content)})),newMessages:request.messages.length,newCharacters:request.messages.reduce((sum,message)=>sum+message.content.length,0),backgroundMessages:request.contextMessages.length,backgroundCharacters:request.contextMessages.reduce((sum,message)=>sum+message.content.length,0),omittedProcessedMessages:contextStart-windowStart});
+   if(recheck)request.reread=true;
+   trace?.event('context','현재 상황 판독 범위',{mode,reread:recheck,maxTurns:this.store.data.settings.chatTurns,windowStart,contextStart,evidenceStart,latestEvidence:request.messages.map(({id,role,swipe,content})=>({id,role,swipe,characters:content.length,hasInfoBlock:/<[^>]*(?:info|status)|(?:location|loc|장소|위치)\s*[:：]/i.test(content)})),newMessages:request.messages.length,newCharacters:request.messages.reduce((sum,message)=>sum+message.content.length,0),backgroundMessages:request.contextMessages.length,backgroundCharacters:request.contextMessages.reduce((sum,message)=>sum+message.content.length,0),omittedProcessedMessages:contextStart-windowStart});
    if(windowStart>start)request.omittedEarlierMessages=windowStart-start;
    onRequest();
    let raw;try{raw=await this.request(system,request,signal,profileId,trace);}catch(error){if(error.kind==='connection'){this.attempts.set(attemptKey,error.message);while(this.attempts.size>30)this.attempts.delete(this.attempts.keys().next().value);}throw error;}if(!valid()){trace?.finish('cancelled','변경된 채팅의 늦은 응답 폐기');return null;}
@@ -446,8 +465,7 @@ export class Engine {
   if(changed){history.push(clone(baseline));history=history.slice(-5);const outfit=outfitText(state);if(outfit&&outfits.at(-1)!==outfit)outfits.push(outfit);outfits=outfits.slice(-10);}
   trace?.event('apply',changed?'착장 변경 적용':'확인된 착장 유지',{people:state.people,changed});
   Object.assign(b,{current:state,keys,extra,history,outfits,outfitMemory:nextMemory});
-  b.checkpoints[key]={state:clone(state),extra:clone(extra),history:clone(history),outfits:clone(outfits),outfitMemory:clone(nextMemory)};
-  for(const stale of Object.keys(b.checkpoints).slice(0,-80))delete b.checkpoints[stale];
+  saveCheckpoint(b,key,{state:clone(state),extra:clone(extra),history:clone(history),outfits:clone(outfits),outfitMemory:clone(nextMemory)});
   if(chatId){b.display??={chats:{},snapshots:{}};b.display.heads??={};b.display.heads[chatId]={key,stale:false};}
   recordDisplay(b,chatId||b.links[0],messages,state,this.store.data.settings.displayLimit);this.store.save();this.controller=null;return state;
  }

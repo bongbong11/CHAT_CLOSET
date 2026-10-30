@@ -32,7 +32,8 @@ export function createMessageOutfits(api){
   if(!state.settings.enabled||state.settings.displayMode!=='inline'||!identity){chat.querySelectorAll('.kc-inline-card').forEach(node=>node.remove());return;}
   const source=api.context().chat,messages=visibleMessages(source),prefixes=prefixKeys(messages),byIndex=new Map();let visible=0;
   source.forEach((message,index)=>{if(!message.is_system&&!message.is_hidden&&!message.extra?.is_hidden){byIndex.set(index,{message:messages[visible],prefix:prefixes[visible]});visible++;}});
-  const eligible=[...byIndex].filter(([,entry])=>entry.message.role==='character').map(([index])=>index),latest=eligible.at(-1),kept=new Set(eligible.slice(-displayLimit(state.settings.displayLimit)));
+  const eligible=[...byIndex].filter(([,entry])=>entry.message.role==='character').map(([index])=>index),latest=eligible.at(-1);
+  const kept=new Set(eligible.filter(index=>{const entry=byIndex.get(index);return index===latest||savedDisplay(state.branch,identity.chat,entry.message,entry.prefix);}).slice(-displayLimit(state.settings.displayLimit)));
   const localKeys=new Set([...kept].map(index=>displayKey(byIndex.get(index).message)));
   for(const key of local.keys())if(!localKeys.has(key))local.delete(key);
   for(const node of chat.querySelectorAll('.mes[mesid]')){
@@ -40,11 +41,12 @@ export function createMessageOutfits(api){
    let card=node.querySelector('.kc-inline-card');
    if(!kept.has(index)||!entry||entry.message.role!=='character'||!textNode||source[index]?.is_user){card?.remove();continue;}
    const saved=savedDisplay(state.branch,identity.chat,entry.message,entry.prefix),key=displayKey(entry.message);
+   const shown=index===latest&&state.outfitReady?state.branch.current:saved?.state,retained=!!shown&&(!saved||state.outfitDetached&&index===latest);
    if(!saved&&index!==latest){card?.remove();continue;}
    const view=saved?.record||local.get(key)||{folded:false};
    const busy=!!(state.pending||state.generating||state.backgroundTask),pending=busy&&index===latest;
    const ink=getComputedStyle(node).color;
-   const signature=hash(JSON.stringify([scope,key,entry.prefix,saved?.state,view.folded,state.settings.brands,identity.name,identity.userName,pending,busy,state.backgroundTask,ink]));
+   const signature=hash(JSON.stringify([scope,key,entry.prefix,shown,retained,view.folded,state.settings.brands,identity.name,identity.userName,pending,busy,state.backgroundTask,ink]));
    if(card?.dataset.signature===signature)continue;
    if(!card){card=document.createElement('section');card.className='kc-inline-card';textNode.insertAdjacentElement('afterend',card);}
    card.dataset.signature=signature;card.dataset.viewKey=key;card.setAttribute('aria-label','착장정보');
@@ -52,17 +54,17 @@ export function createMessageOutfits(api){
    const names={character:identity.name||'캐릭터',persona:identity.userName||'페르소나'};
    const bodyId='kc-outfit-'+index;
    const personHtml=who=>{
-    const person=saved?.state.people[who];
+    const person=shown?.people[who];
     const content=!person?'<p class="kc-inline-empty">착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.</p>':person.nude?'<p class="kc-inline-empty">착용 없음</p>':!person.items.length?'<p class="kc-inline-empty">확인된 착장 없음</p>':`<dl>${CATEGORIES.map(category=>{
      const items=person.items.filter(item=>item.category===category);if(!items.length)return '';
      return `<div class="kc-inline-row"><dt>${category}</dt><dd>${items.map(item=>`<span class="kc-inline-item">${escape(itemUiLabel(item))}${state.settings.brands?`<small>${escape(itemUiBrand(item))}</small>`:''}${koreanDisplay(item.wearingKo)?`<em>${escape(item.wearingKo)}</em>`:''}</span>`).join('')}</dd></div>`;
     }).join('')}</dl>`;
     return `<section class="kc-inline-person" id="${bodyId}-${who}" data-who="${who}"><h4>${escape(names[who])}</h4>${content}</section>`;
    };
-   const scene=saved?.state.sceneKo||{},summary=[scene.place,scene.activity].filter(v=>koreanDisplay(v)).join(' · ');
+   const scene=shown?.sceneKo||{},summary=[scene.place,scene.activity].filter(v=>koreanDisplay(v)).join(' · ');
    const collectedOpen=!!card.querySelector('.kc-collected')?.open;
-   card.innerHTML=`<span class="kc-inline-tape" aria-hidden="true"></span><div class="kc-inline-head"><button type="button" class="kc-inline-toggle" aria-expanded="${!view.folded}" aria-controls="${bodyId}"><img src="${asset(view.folded?'kikki-closed.webp':'kikki-open.webp')}" alt="끼끼"><span>착장정보</span><span class="kc-inline-chevron" aria-hidden="true">${view.folded?'⌄':'⌃'}</span></button><div class="kc-inline-tools"><button type="button" data-kc-action="read" ${busy?'disabled':''}>현재 옷 보기</button><button type="button" data-kc-action="open">의상실 열기</button></div></div><div class="kc-inline-body" id="${bodyId}" ${view.folded?'hidden':''}>${saved?`<div class="kc-inline-people">${PEOPLE.map(personHtml).join('')}</div>${summary?`<footer>${escape(summary)}</footer>`:''}`:`<p class="kc-inline-empty" role="status">${pending?'착장을 확인하고 있어요.':'착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.'}</p>`}</div>`;
-   if(saved){card.querySelector('.kc-inline-body').insertAdjacentHTML('beforeend',collectedHtml(saved.state,names));card.querySelector('.kc-collected').open=collectedOpen;}
+   card.innerHTML=`<span class="kc-inline-tape" aria-hidden="true"></span><div class="kc-inline-head"><button type="button" class="kc-inline-toggle" aria-expanded="${!view.folded}" aria-controls="${bodyId}"><img src="${asset(view.folded?'kikki-closed.webp':'kikki-open.webp')}" alt="끼끼"><span>착장정보</span><span class="kc-inline-chevron" aria-hidden="true">${view.folded?'⌄':'⌃'}</span></button><div class="kc-inline-tools"><button type="button" data-kc-action="read" ${busy?'disabled':''}>현재 옷 보기</button><button type="button" data-kc-action="open">의상실 열기</button></div></div><div class="kc-inline-body" id="${bodyId}" ${view.folded?'hidden':''}>${shown?`${retained?'<p class="kc-inline-empty">마지막 확인 착장 · 새 답변 판독 전</p>':''}<div class="kc-inline-people">${PEOPLE.map(personHtml).join('')}</div>${summary?`<footer>${escape(summary)}</footer>`:''}`:`<p class="kc-inline-empty" role="status">${pending?'착장을 확인하고 있어요.':'착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.'}</p>`}</div>`;
+   if(shown){card.querySelector('.kc-inline-body').insertAdjacentHTML('beforeend',collectedHtml(shown,names));card.querySelector('.kc-collected').open=collectedOpen;}
    function update(patch){
     if(scope!==currentScope)return;
     if(saved)api.saveView(entry.message,entry.prefix,patch);

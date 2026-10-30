@@ -1,7 +1,7 @@
 import {getContext} from '../../../extensions.js';
 import {ConnectionManagerRequestService} from '../../shared.js';
 import * as worldInfo from '../../../world-info.js';
-import {Store,Engine,DiagnosticLog,normalizeProfile,clone,prefixKeys,outfitInjection,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,memoryFromStates,hash,compactStoredData,reconcileDisplay,trimDisplay,trustedTimeline} from './core.js';
+import {Store,Engine,DiagnosticLog,normalizeProfile,clone,prefixKeys,outfitInjection,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,saveCheckpoint,memoryFromStates,hash,compactStoredData,reconcileDisplay,trimDisplay,trustedTimeline} from './core.js';
 import {ANALYSIS,SCENE,OUTFIT_ITEMS,WARDROBE_FILL,WARDROBE_REBUILD,WARDROBE_LABELS} from './prompts.js';
 import {createHost,injectPayload,registerOutfitMacro} from './host.js';
 import {createUI} from './ui.js';
@@ -33,7 +33,7 @@ function finishTask(controller){if(analysisController!==controller)return;contro
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
 const sameIdentity=expected=>{const actual=host.identity();return !!expected&&actual?.id===expected.id&&actual.chat===expected.chat&&actual.personaKey===expected.personaKey;};
 const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcile&&reconcileDisplay(v.b,v.i.chat,messages,settings().displayLimit);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
-const state=()=>{const v=current();return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!(v&&trustedTimeline(v.b,host.messages(),v.i.chat)),settings:settings(),injectionError,pending:pending||!!manualRead,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
+const state=()=>{const v=current(),timeline=v&&trustedTimeline(v.b,host.messages(),v.i.chat);return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!timeline,outfitDetached:!!timeline?.detached,settings:settings(),injectionError,pending:pending||!!manualRead,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
  const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,profileId:settings().profileId});
  try{await storage.pull();}catch(error){trace.fail(error,'storage-pull');throw error;}
@@ -150,7 +150,7 @@ async function refillWardrobe(who,categoryId='all'){
   for(const category of categories)replaceWardrobeCategory(v.b,who,category.category,result.wardrobe.filter(i=>i.category===category.category),result.wardrobeExceptions[category.id]);
   // Rebase only at the last processed turn; RP written during generation still needs reading.
   v.b.keys=processedKeys;const last=v.b.keys.at(-1);
-  if(last)v.b.checkpoints[last]={state:clone(v.b.current),extra:clone(v.b.extra),history:[],outfits:[],outfitMemory:clone(v.b.outfitMemory)};
+  if(last)saveCheckpoint(v.b,last,{state:clone(v.b.current),extra:clone(v.b.extra),history:[],outfits:[],outfitMemory:clone(v.b.outfitMemory)});
   store.save();await storage.flush();ui.refresh();return true;
  }catch(error){controller.trace?.fail(error,'apply');throw error;}finally{finishTask(controller);}
 }
@@ -249,13 +249,13 @@ if(eventTypes.GENERATION_STARTED)eventSource.on(eventTypes.GENERATION_STARTED,(t
  if(dryRun||['quiet','impersonate'].includes(type))return;generationStopped=false;generating=true;if(runningRead){stopReader();deferredRead=true;}if(timer)deferredRead=true;clearTimeout(timer);timer=null;
 });
 function stopReader(){runningRead?.trace?.finish('cancelled','판독 취소 · 채팅/생성 변경');engine.cancel();readId++;runningRead=null;pending=false;prepared=null;clearTimeout(timer);timer=null;ui.toast(false);}
-// Structural edits invalidate immediately; they do not launch a recovery request.
+// Structural edits invalidate reply links, preserve the latest baseline and cancel old work.
 function changedChat(){
  const v=current();if(!v)return;
  const key=prefixKeys(host.messages()).at(-1)||'root';
  const trusted=trustedTimeline(v.b,host.messages(),v.i.chat);
- if(!trusted||runningRead&&runningRead.messageKey!==key)stopReader();
- if(!trusted){deferredRead=false;deferredForce=false;}
+ if(!trusted||trusted.detached||runningRead&&runningRead.messageKey!==key)stopReader();
+ if(!trusted||trusted.detached){deferredRead=false;deferredForce=false;}
  prepared=null;restoreActive();ui.refresh();
 }
 for(const key of ['MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED'])if(eventTypes[key])eventSource.on(eventTypes[key],()=>{changedChat();});

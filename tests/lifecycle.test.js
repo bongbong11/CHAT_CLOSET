@@ -104,14 +104,14 @@ test('축소 문맥에서도 지속 상태를 전달하고 새 증거로 해소�
  const state=h.store.branch('c',h.bid).current;assert.deepEqual(state.people.character.context.conditions,['Pregnant']);assert.deepEqual(state.people.character.context.needs,[]);assert.deepEqual(state.people.persona.context.conditions,['Inpatient treatment']);
 });
 
-test('삭제·수정·스와이프·하이드로 기준점이 무효화되면 전체 범위를 읽고 지워진 상태는 보내지 않는다',async()=>{
+test('삭제·수정·스와이프·하이드 후 최신 판독을 유지하고 과거 행동을 재실행하지 않는다',async()=>{
  for(const kind of ['delete','edit','swipe','hide']){
   const h=readHarness(),messages=longHistory();h.replies.push({changes:{character:{context:{conditions:['Arm injury']}}}});await h.read(messages);let remaining=structuredClone(messages);
   if(kind==='delete')remaining.splice(3,2);
   if(kind==='edit')remaining[3].content='A different earlier event.';
   if(kind==='swipe'){remaining[3].swipe=1;remaining[3].content='A different swipe.';}
   if(kind==='hide')remaining=remaining.filter((_,index)=>index!==3);
-  await h.read(remaining);const request=h.calls.at(-1);assert.deepEqual(request.messages,remaining.slice(-16));assert.deepEqual(request.contextMessages,[]);assert.equal(request.people.character.context.conditions,undefined);assert.equal(h.logs.list()[0].events.find(event=>event.stage==='context').data.mode,'full');
+  await h.read(remaining);const request=h.calls.at(-1);assert.deepEqual(request.messages,remaining.slice(-1));assert.deepEqual(request.contextMessages,remaining.slice(-16,-1));assert.equal(request.reread,true);assert.deepEqual(request.people.character.context.conditions,['Arm injury']);assert.equal(h.logs.list()[0].events.find(event=>event.stage==='context').data.mode,'retained');
  }
 });
 

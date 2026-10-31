@@ -198,6 +198,12 @@ assert.equal(await page.evaluate(()=>TEST_CONTEXT.chat.at(-1).mes),originalStory
 
 // Bounded records: unchanged replies still get a memo; reload restores only recent N without a model call.
 await page.locator('.kc-open').click();await page.locator('[data-action="settings"]').click();
+assert.match(await page.locator('[name="chatTurns"]').locator('..').innerText(),/최대 50턴/);assert.match(await page.locator('[name="displayLimit"]').locator('..').innerText(),/최대 20개/);
+await page.locator('[name="chatTurns"]').fill('100');await page.locator('[name="chatTurns"]').dispatchEvent('change');await saved();assert.equal(await page.locator('[name="chatTurns"]').inputValue(),'50');assert.equal(stored().data.settings.chatTurns,50);
+await page.locator('[name="chatTurns"]').fill('2');await page.locator('[name="chatTurns"]').dispatchEvent('change');await saved();
+await page.locator('[name="displayLimit"]').fill('100');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();assert.equal(await page.locator('[name="displayLimit"]').inputValue(),'20');assert.equal(stored().data.settings.displayLimit,20);
+await page.locator('[name="displayLimit"]').fill('4');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();assert.equal(stored().data.settings.displayLimit,4);
+await page.locator('[name="displayLimit"]').fill('1');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();
 assert.equal(await page.locator('[name="displayLimit"]').inputValue(),'1');
 await page.locator('[name="displayLimit"]').fill('3');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();await page.locator('[data-action="sub-close"]').click();
 const beforeRetention=await page.evaluate(()=>calls.length);

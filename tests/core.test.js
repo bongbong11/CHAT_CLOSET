@@ -145,3 +145,18 @@ test('원본 text completion 응답과 usage도 기존 JSON 계약으로 읽는�
  const service={getProfile:()=>({}),validateProfile(){},async sendRequest(){return {results:[{text:'{"ok":true}'}],usage:{completion_tokens:4}};}};
  assert.deepEqual(await createHost(()=>({}),service,{}).request('p','Return JSON.',{},new AbortController().signal,'test'),{ok:true});
 });
+
+test('정상 종료 JSON 닫힘만 로컬 보완하며 미완성 값과 한도 초과는 적용하지 않는다',async()=>{
+ let calls=0;const logs=new DiagnosticLog({console:null});const service={getProfile:()=>({}),validateProfile(){},async sendRequest(){calls++;return {choices:[{message:{content:'{"changes":{"character":{"context":{"location":"home"}}}'},finish_reason:'stop'}]};}};
+ const result=await createHost(()=>({}),service,{},{logs}).request('p',SCENE,{},new AbortController().signal,'scene');assert.equal(result.facts.changes.character.context.location,'home');assert.equal(calls,1);assert.ok(logs.list()[0].events.some(event=>event.stage==='parse'&&event.data?.repair==='closing_delimiters'));
+ for(const raw of ['{"changes":{"character":','{"changes":{"character":{"context":{"location":"hom','{"changes":{"character":{"context":{"temperature":1e','{"changes":{},','{"changes":{"character":tru']){
+  const broken={...service,async sendRequest(){return {choices:[{message:{content:raw},finish_reason:'stop'}]};}};assert.equal((await createHost(()=>({}),broken,{}).request('p',SCENE,{},new AbortController().signal,'scene')).outcome,'unusable');
+ }
+});
+
+test('닫힘 보완은 문자열 속 괄호와 배열을 구분하고 한도 초과와 종료 사유 없음은 복구하지 않는다',async()=>{
+ for(const [raw,reason,accepted] of [['```json\n{"changes":{"character":{"context":{"conditions":["brace with {mark}"]}}\n```','STOP',true],['{"changes":{},"scene":{"place":"Room \\"A\\""}','end_turn',true],['{"changes":{}','length',false],['{"changes":{}',undefined,false],['{"changes":{]','stop',false]]){
+  let calls=0;const service={getProfile:()=>({}),validateProfile(){},async sendRequest(){calls++;return {choices:[{message:{content:raw},finish_reason:reason}]};}};
+  const result=await createHost(()=>({}),service,{}).request('p',SCENE,{},new AbortController().signal,'scene');assert.equal(result.outcome!=='unusable',accepted,raw);assert.equal(calls,accepted?1:2);
+ }
+});

@@ -38,6 +38,21 @@ function incompleteJSON(raw){
  }
  return depth>0||quoted;
 }
+function closeJSON(raw,finishReason){
+ if(typeof raw!=='string'||!/^(?:stop|end_turn)$/i.test(finishReason||''))return null;
+ const source=raw.trim().replace(/^```(?:json)?\s*\n?/i,'').replace(/\s*```$/,'').trim();
+ if(!/^[{[]/.test(source))return null;
+ const stack=[];let quoted=false,escaped=false;
+ for(const char of source){
+  if(quoted){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char==='"')quoted=false;continue;}
+  if(char==='"')quoted=true;
+  else if(char==='{'||char==='[')stack.push(char==='{'?'}':']');
+  else if(char==='}'||char===']'){if(stack.pop()!==char)return null;}
+ }
+ if(quoted||!stack.length)return null;
+ const closing=stack.reverse().join(''),candidate=source+closing;
+ try{JSON.parse(candidate);return {text:candidate,closing};}catch{return null;}
+}
 
 
 export function createHost(context,service,worldInfo,diagnostics={}){
@@ -114,7 +129,10 @@ export function createHost(context,service,worldInfo,diagnostics={}){
      const response=await send(profileId,messages,maxTokens,signal);if(signal?.aborted)throw abortError();
      const received=responseData(response);raw=received.raw;
      trace?.event('response','응답 수신',{task,attempt:attempt+1,...received});
-     if(/^(?:length|max_tokens|max_output_tokens|model_length)$/i.test(received.finishReason||'')||incompleteJSON(raw)){
+     const limited=/^(?:length|max_tokens|max_output_tokens|model_length)$/i.test(received.finishReason||'');
+     const repaired=!limited&&closeJSON(raw,received.finishReason);
+     if(repaired){raw=repaired.text;trace?.event('parse','정상 종료 응답의 닫는 괄호 보완',{attempt:attempt+1,repair:'closing_delimiters',closing:repaired.closing,finishReason:received.finishReason});}
+     if(limited||incompleteJSON(raw)){
       lastError=Object.assign(Error('응답이 끝까지 생성되지 않았습니다. 기존 자료를 유지합니다.'),{kind:'incomplete',finishReason:received.finishReason});
       trace?.event('parse','불완전한 응답 · 일부 내용 적용 차단',{attempt:attempt+1,finishReason:received.finishReason},'warn');
       if(attempt===0){messages=original;continue;}

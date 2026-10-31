@@ -17,6 +17,45 @@ const owned={character:[shirt,pants,shoes,briefs],persona:[]};
 const facts=context=>validateSceneFacts({changes:{character:{context}}});
 const ids=state=>state.people.character.items.map(item=>item.id);
 const home=()=>{const state=emptyState();state.people.character.context=normalizeContext({location:'home',space:'private',phase:'resting'});state.people.character.items=[shirt,pants,briefs];return state;};
+
+test('기존 집의 빈 수동 착장도 미확인으로 복구하고 옷장이 비면 생성 요청을 만든다',()=>{
+ const state=home();state.people.character.items=[];state.people.character.manualOutfit=true;state.people.character.matchKey='stale';
+ const result=resolveOutfit(state,{changes:{}},owned,{}, {},{newItems:'medium'});
+ assert.ok(result.state.people.character.items.some(item=>item.id==='top'));assert.equal(result.state.people.character.manualOutfit,undefined);assert.equal(result.state.people.character.outfitStatus,'known');
+ const empty=resolveOutfit(state,{changes:{}},{character:[],persona:[]},{},{},{newItems:'medium'});assert.ok(empty.missing.some(item=>item.who==='character'&&item.category==='상의'));assert.ok(empty.missing.some(item=>item.category==='하의'));
+ const off=resolveOutfit(state,{changes:{}},{character:[],persona:[]},{},{},{newItems:'off'});assert.deepEqual(off.missing,[]);assert.ok(off.decisions.some(item=>item.action==='generation_skipped'));
+});
+
+test('명시 탈의·수면·목욕·마지막 품목 제거는 미확인 복구로 다시 입히지 않는다',()=>{
+ for(const phase of ['washing','after_washing','sleeping','care']){const state=home();state.people.character.items=[];state.people.character.context.phase=phase;const result=resolveOutfit(state,{changes:{}},owned);assert.deepEqual(result.state.people.character.items,[]);assert.deepEqual(result.missing,[]);}
+ const state=home();state.people.character.items=[];state.people.character.nude=true;assert.deepEqual(resolveOutfit(state,{changes:{}},owned).state.people.character.items,[]);
+ const last=home();last.people.character.items=[shirt];const removed=resolveOutfit(last,validateSceneFacts({changes:{character:{actions:[{op:'remove',category:'상의',name:'Oxford shirt'}]}}}),owned);
+ assert.equal(removed.state.people.character.outfitStatus,'known');assert.deepEqual(resolveOutfit(removed.state,{changes:{}},owned).state.people.character.items,[]);
+});
+
+test('미확인 착장은 실제 생성·저장까지 이어지고 생성 실패는 기존 자료를 보존한다',async()=>{
+ for(const fail of [false,true]){
+  const storage=memory(),s=new Store(storage);s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'chat');b.base=home();b.base.people.character.items=[];b.current=structuredClone(b.base);b.profiles.character={wardrobe:[]};s.data.settings.displayLimit=4;let generated=0;
+  const before=structuredClone(b),engine=new Engine(s,async()=>({changes:{}}),async data=>{generated++;return fail?{newItems:{character:[]}}:{newItems:{character:data.missing.filter(n=>n.who==='character').map((n,i)=>({id:'created-'+i,requestId:n.requestId,category:n.category,name:n.category==='상의'?'cotton shirt':n.category==='하의'?'cargo trousers':'boxer briefs',brand:'MUJI',labelKo:'의류',brandKo:'무지',available:true}))}};});
+  const messages=[message('first','He answers quietly.')];
+  if(fail){await assert.rejects(()=>engine.read('c',bid,messages,{chatId:'chat',gate:true}));assert.deepEqual(b,before);}
+  else{await engine.read('c',bid,messages,{chatId:'chat',gate:true});assert.equal(b.current.people.character.items.length,3);assert.equal(b.extra.character.length,3);const loaded=new Store(storage);assert.equal(loaded.branch('c',bid).current.people.character.items.length,3);messages.push(message('second'));await engine.read('c',bid,messages,{chatId:'chat',gate:true});}
+  assert.equal(generated,1);
+ }
+});
+
+test('이전 수동 표지 보정은 모든 복원 상태에 적용하며 상대 인물은 새로 수동 고정하지 않는다',()=>{
+ const storage=memory(),s=new Store(storage);s.createCharacter('c','C');const bid=s.createBranch('c','B'),b=s.branch('c',bid);s.bind('c',bid,'chat');b.profiles.character={wardrobe:owned.character};b.current=home();b.current.people.persona.items=[];
+ const untouched=structuredClone(b.current.people.persona),people=structuredClone(b.current.people);people.character.items=[shirt,pants];saveManualOutfit(b,people,[message(1)],'chat');assert.deepEqual(b.current.people.persona,untouched);assert.equal(b.current.people.persona.manualOutfit,undefined);
+ const legacy=home();legacy.people.character.items=[];legacy.people.character.manualOutfit=true;legacy.people.character.matchKey='old';
+ b.base=structuredClone(legacy);b.current=structuredClone(legacy);b.history=[structuredClone(legacy)];const key=prefixKeys([message(1)])[0];b.checkpoints[key]={state:structuredClone(legacy),history:[structuredClone(legacy)],extra:{character:[],persona:[]},outfitMemory:{}};b.display.heads.chat={key,stale:true};s.save();
+ const loaded=new Store(storage),next=loaded.branch('c',bid);for(const value of [next.current,next.base,...next.history,next.checkpoints[key].state,...next.checkpoints[key].history]){assert.equal(value.people.character.outfitStatus,'unknown');assert.equal(value.people.character.manualOutfit,undefined);assert.equal(value.people.character.matchKey,undefined);}
+ assert.equal(next.display.heads.chat.key,key);const again=new Store({getItem:()=>JSON.stringify(loaded.data)});assert.deepEqual(again.data,loaded.data);
+});
+
+test('설정 숫자 상한은 로드에서도 읽기 50턴·보관 20개로 정규화한다',()=>{
+ const s=new Store({getItem:()=>JSON.stringify({version:1,settings:{chatTurns:100,displayLimit:100},characters:{}})});assert.equal(s.data.settings.chatTurns,50);assert.equal(s.data.settings.displayLimit,20);
+});
 test('기존 파일을 보존하며 장면 기준값과 표시 방식을 보완하고 새 파일을 만들지 않는다',()=>{
  const storage=memory(),source={version:1,settings:{profileId:'saved'},characters:{c:{name:'C',profiles:{character:{wardrobe:[shirt]}},branches:{b:{links:['chat'],base:{people:{character:{items:[shirt]},persona:{items:[]}}},current:{people:{character:{items:[shirt]},persona:{items:[]}}},history:[],checkpoints:{}}}}}};
  storage.setItem(KEY,JSON.stringify(source));const store=new Store(storage),branch=store.branch('c','b');
@@ -467,7 +506,7 @@ test('명시된 옷과 수동 착장은 보정으로 덮지 않으며 실제 새
  const arrived=structuredClone(kept.state);arrived.people.persona.context=normalizeContext({location:'outside',space:'public',phase:'outdoors'});
  const moved=resolveOutfit(arrived,validateSceneFacts({changes:{persona:{transition:true,context:{location:'home',space:'private',phase:'resting'}}}}),stock);assert.ok(moved.state.people.persona.items.some(i=>i.id==='lounge'));
  const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.current=state;b.profiles.persona={wardrobe:stock.persona};
- saveManualOutfit(b,state.people,[message(1)],'chat');assert.equal(b.current.people.persona.origins['old-slacks'],'manual');assert.equal(b.current.people.persona.manualOutfit,true);
+ saveManualOutfit(b,state.people,[message(1)],'chat');assert.equal(b.current.people.persona.origins['old-slacks'],'explicit');assert.equal(b.current.people.persona.manualOutfit,undefined);
  assert.ok(resolveOutfit(b.current,{changes:{}},stock).state.people.persona.items.some(i=>i.id==='old-slacks'));
 });
 test('새 옷 허용값 변경은 재평가하되 같은 장면을 매번 새로 채우지 않는다',()=>{

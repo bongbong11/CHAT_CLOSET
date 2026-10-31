@@ -35,7 +35,7 @@ const sameIdentity=expected=>{const actual=host.identity();return !!expected&&ac
 const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcile&&reconcileDisplay(v.b,v.i.chat,messages,settings().displayLimit);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
 const state=()=>{const v=current(),timeline=v&&trustedTimeline(v.b,host.messages(),v.i.chat);return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!timeline,outfitDetached:!!timeline?.detached,settings:settings(),injectionError,pending:pending||!!manualRead,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
- const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,profileId:settings().profileId});
+ const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,displayLimit:settings().displayLimit,newItems:settings().newItems,profileId:settings().profileId});
  try{await storage.pull();}catch(error){trace.fail(error,'storage-pull');throw error;}
  if(intent!==readId||!sameIdentity(expected)||chat!==host.context().chat||(!force&&generationStopped)){trace.finish('cancelled','서버 확인 중 판독 취소');return null;}
  const v=current();if(!settings().enabled||!v||v.b.suspended){trace.finish('skipped','비활성 또는 연결된 브랜치 없음');return v?.b.current||null;}

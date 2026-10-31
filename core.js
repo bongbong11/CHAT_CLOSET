@@ -7,7 +7,7 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.10';
+export const EXTENSION_VERSION='1.6.11';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -105,7 +105,7 @@ export function recordDisplay(branch,chatId,messages,state,limit=1){
  const index=messages.findLastIndex(message=>message.role==='character');
  const message=messages[index];if(!chatId||message?.role!=='character')return;
  branch.display??={chats:{},snapshots:{}};
- const display=branch.display,snapshot={sceneKo:sceneSummary(state),people:Object.fromEntries(['character','persona'].map(who=>[who,{nude:!!state.people[who].nude,items:clone(state.people[who].items),context:clone(state.people[who].context||{})}]))};
+ const display=branch.display,snapshot={sceneKo:sceneSummary(state),people:Object.fromEntries(['character','persona'].map(who=>[who,{nude:!!state.people[who].nude,outfitStatus:state.people[who].outfitStatus||'unknown',...(state.people[who].outfitNote?{outfitNote:state.people[who].outfitNote}:{}),items:clone(state.people[who].items),context:clone(state.people[who].context||{})}]))};
  const serialized=JSON.stringify(snapshot);let key=hash(serialized),n=0;
  while(display.snapshots[key]&&JSON.stringify(display.snapshots[key])!==serialized)key=hash(serialized)+'-'+(++n);
  display.snapshots[key]=snapshot;
@@ -218,7 +218,13 @@ export function restoreBranchForMessages(branch,messages,chatId){
 export function saveManualOutfit(branch,people,messages,chatId,limit=1){
  const next=ensureContexts({...clone(branch.current),people:clone(people)});
  validateState(next,Object.fromEntries(['character','persona'].map(who=>[who,ownedItems(branch,who)])));
- for(const person of Object.values(next.people)){person.origins=Object.fromEntries(person.items.map(item=>[item.id,'manual']));person.manualOutfit=true;}
+ for(const who of ['character','persona']){
+  const person=next.people[who],previous=branch.current.people[who];
+  const changed=person.nude!==previous.nude||JSON.stringify(person.items)!==JSON.stringify(previous.items);
+  if(!changed)continue;
+  person.origins=Object.fromEntries(person.items.map(item=>[item.id,JSON.stringify(previous.items.find(old=>old.id===item.id))===JSON.stringify(item)?previous.origins?.[item.id]||'manual':'manual']));
+  person.outfitStatus=person.nude||person.items.length?'known':'unknown';delete person.matchKey;
+ }
  branch.outfitMemory=updateOutfitMemory(branch.outfitMemory,branch.current,next);branch.current=next;
  branch.keys=prefixKeys(messages);const last=branch.keys.at(-1);
  if(last){
@@ -229,6 +235,12 @@ export function saveManualOutfit(branch,people,messages,chatId,limit=1){
 }
 export function outfitInjection(state){
  return outfitText(state,2,true);
+}
+export function outfitEmptyLabel(person){
+ if(person?.nude)return '착용 없음';if(person?.outfitStatus==='known')return '확인된 착장 없음';
+ if(person?.outfitNote==='generation_disabled')return '착장 미확인 · 새 옷 생성 설정으로 보충 생략';
+ if(['washing','after_washing','sleeping','care'].includes(person?.context?.phase))return '착장 미확인 · 현재 상황에서 자동 구성 생략';
+ return '착장 미확인';
 }
 export function itemBrandLabel(item){return String(item.brand||'').trim()||'Brand pending';}
 export const koreanDisplay=value=>typeof value==='string'&&/[가-힣]/.test(value)&&!/[A-Za-z]/.test(value)?value:'';
@@ -330,6 +342,7 @@ export class Store {
   try{
    const d=JSON.parse(raw);if(d.version!==1||!d.characters||typeof d.characters!=='object')throw Error();
    d.settings={...DEFAULTS,...d.settings,wardrobeLevel:wardrobeLevel(d.settings)};
+   d.settings.chatTurns=Math.max(1,Math.min(50,Math.floor(Number(d.settings.chatTurns))||8));
    d.settings.displayLimit=displayLimit(d.settings.displayLimit);
    if(!['floating','inline'].includes(d.settings.displayMode))d.settings.displayMode='floating';
    d.settings.newItems=newItemPolicy(d.settings.newItems);
@@ -391,7 +404,8 @@ export class Engine {
   const previousEnvironment=collect(messages.slice(environmentStart,start)),freshEnvironment=collect(messages.slice(Math.max(environmentStart,start)));
   const unconfirmed=key=>['character','persona'].every(who=>baseline.people[who].context[key]===null||baseline.people[who].context[key]==='unknown');
   const environmentEvidence=timeline?.detached?collect(messages.slice(Math.max(environmentStart,messages.findLastIndex(message=>message.role==='character')))):force||start===0?collect(messages.slice(environmentStart)):{...Object.fromEntries(Object.entries(previousEnvironment).filter(([key])=>unconfirmed(key))),...Object.fromEntries(Object.entries(freshEnvironment).filter(([key,value])=>value!==previousEnvironment[key]||unconfirmed(key)))};
-  const needsRead=force||chatId&&(!timeline||timeline.detached)||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
+  const unconfirmedOutfit=Object.values(baseline.people).some(person=>person.outfitStatus==='unknown'&&!person.nude&&!person.items.length&&!person.matchKey&&person.context.location!=='unknown'&&['resting','preparing','outdoors','working','formal'].includes(person.context.phase));
+  const needsRead=force||unconfirmedOutfit||chatId&&(!timeline||timeline.detached)||(start!==messages.length&&(!gate||needsOutfitRead(messages,start)));
   const attemptKey=JSON.stringify([id,bid,chatId,key,profileId,epoch]);
   if(!force&&this.attempts.has(attemptKey)){trace?.finish('unusable','같은 응답의 자동 재시도 생략',{reason:this.attempts.get(attemptKey)});return null;}
   trace?.event('gate',needsRead?'새 장면 판독':'변화 후보 없음 · 착장 유지',{force,start,messageCount:messages.length,chatId,names,baseline:timeline?.detached?'last-confirmed':'aligned'});
@@ -467,6 +481,9 @@ export class Engine {
   Object.assign(b,{current:state,keys,extra,history,outfits,outfitMemory:nextMemory});
   saveCheckpoint(b,key,{state:clone(state),extra:clone(extra),history:clone(history),outfits:clone(outfits),outfitMemory:clone(nextMemory)});
   if(chatId){b.display??={chats:{},snapshots:{}};b.display.heads??={};b.display.heads[chatId]={key,stale:false};}
-  recordDisplay(b,chatId||b.links[0],messages,state,this.store.data.settings.displayLimit);this.store.save();this.controller=null;return state;
+  const displayChat=chatId||b.links[0],recordsBefore=Object.keys(b.display?.chats?.[displayChat]||{}).length;
+  recordDisplay(b,displayChat,messages,state,this.store.data.settings.displayLimit);this.store.save();
+  trace?.event('storage','착장 저장 요청 · 보관 한도 적용',{chatId:displayChat,displayLimit:this.store.data.settings.displayLimit,recordsBefore,recordsAfter:Object.keys(b.display?.chats?.[displayChat]||{}).length,latestCheckpoint:!!b.checkpoints[key],people:Object.fromEntries(['character','persona'].map(who=>[who,{outfitStatus:state.people[who].outfitStatus,items:state.people[who].items.length,nude:state.people[who].nude}]))});
+  this.controller=null;return state;
  }
 }

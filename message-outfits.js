@@ -1,4 +1,4 @@
-import {CATEGORIES,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabel,itemUiBrand,koreanDisplay,hash,displayLimit} from './core.js';
+import {CATEGORIES,outfitEmptyLabel,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabel,itemUiBrand,koreanDisplay,hash,displayLimit} from './core.js';
 import {WEATHER_LABELS} from './scene-gate.js';
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -55,7 +55,7 @@ export function createMessageOutfits(api){
    const bodyId='kc-outfit-'+index;
    const personHtml=who=>{
     const person=shown?.people[who];
-    const content=!person?'<p class="kc-inline-empty">착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.</p>':person.nude?'<p class="kc-inline-empty">착용 없음</p>':!person.items.length?'<p class="kc-inline-empty">확인된 착장 없음</p>':`<dl>${CATEGORIES.map(category=>{
+    const content=!person?'<p class="kc-inline-empty">착장 확인 필요 · 현재 옷 보기로 확인할 수 있어요.</p>':person.nude?'<p class="kc-inline-empty">착용 없음</p>':!person.items.length?'<p class="kc-inline-empty">'+escape(outfitEmptyLabel(person))+'</p>':`<dl>${CATEGORIES.map(category=>{
      const items=person.items.filter(item=>item.category===category);if(!items.length)return '';
      return `<div class="kc-inline-row"><dt>${category}</dt><dd>${items.map(item=>`<span class="kc-inline-item">${escape(itemUiLabel(item))}${state.settings.brands?`<small>${escape(itemUiBrand(item))}</small>`:''}${koreanDisplay(item.wearingKo)?`<em>${escape(item.wearingKo)}</em>`:''}</span>`).join('')}</dd></div>`;
     }).join('')}</dl>`;

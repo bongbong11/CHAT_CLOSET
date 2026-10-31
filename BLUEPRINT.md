@@ -1,6 +1,8 @@
 # 끼끼의상실 구현 설계도
 
-작성 기준: 2026-10-24 / 최신 수정: 2026-10-31, 1.6.11 배포 전 로컬 검수. 이 문서는 확장 전체의 연결 지도, 수정 계약, 구현 순서, 검수 기록이다. `sources/`의 동기화 자료는 수정하지 않는다. 최신 착장 보존 계약은 **21절**, 착장 미생성·구문 복구·입력 상한 보완은 **22절**을 우선하며, 이전 절의 구조 변경 시 빈 상태로 초기화하는 내용은 당시 구현 기록이다. 합의된 프롬프트 원문은 이번 수정에서 변경하지 않는다.
+이번 수정의 상세 설계·구현·검수 기록: **23절**. 1.6.11을 기준으로 작성하고 1.6.12 코드에 반영했다. 단계별 완료 기록은 23.11~23.12절을 우선한다.
+
+작성 기준: 2026-10-24 / 최신 수정: 2026-10-31, 1.6.12. 이 문서는 확장 전체의 연결 지도, 수정 계약, 구현 순서, 검수 기록이다. `sources/`의 동기화 자료는 수정하지 않는다. 최신 착장 보존 계약은 **21절**, 착장 미생성·구문 복구·입력 상한 보완은 **22절**, 본문 착용 확인과 변경 필요 판단은 **23절**을 우선한다. 이전 절의 구조 변경 시 빈 상태로 초기화하는 내용은 당시 구현 기록이다. 이번 프롬프트 변경 범위는 23절의 SCENE/SCENE_RECOVERY에 한정한다.
 
 ## 1. 제품 계약
 
@@ -775,3 +777,246 @@ host.js에서 provider 종료 사유 확인 → 제한적 구문 보완 → 기�
 - 첨부 로그의 Gemini 응답과 기존 판독 상태를 로컬 재생해 캐릭터가 미확인 빈 수동 고정에서 벗어나 적합한 테스트 옷장의 3개 품목을 선택하고, 페르소나는 니트 제거·수면 상태를 유지함을 확인했다. DeepSeek 두 원문은 각각 정상 종료와 닫힘 하나 누락으로 인식해 모델 재요청 없이 해석했다. 실제 유료 모델을 호출한 품질 검증 결과는 아니다.
 - 보유품 없는 미확인 착장의 생성 요청→연결→적용→저장/재로드, 생성 실패 시 원자적 보존, 신규 생성 금지, 실제 탈의·수면·목욕·마지막 품목 제거 보호, 이전 저장 상태의 반복 보정과 상대 인물 비고정을 검사했다.
 - 승인된 프롬프트 원문은 별도로 대조한다. 임시 검수 이미지와 찌꺼기는 배포 전 정리하며 저장 자료·채팅 원문을 삭제하지 않는다. 원격 업로드는 하지 않은 상태다.
+
+
+## 23. 본문 착용 근거 우선·변경 필요 판정 상세 실행 계획
+
+작성일: 2026-10-31. 기준: 배포된 1.6.11 / 2b817a9. 아래는 승인된 설계이며 순서대로 1.6.12에 구현·검수했다. 앞 단계의 계약이 달라지면 이 절의 관련 호출부·검사도 먼저 함께 갱신한다. 최종 구현 차이와 검수 결과는 23.11~23.12절에 기록한다.
+
+### 23.1 목표와 문제 재현
+
+사용자 요구는 본문의 날짜·시간·전후 흐름을 읽고 저장된 옷을 바꿀 필요가 있는지 짧게 판단한 뒤 기존 선택·생성 기능을 실행하는 것이다. 모델 호출을 예/아니오 판독과 의상 판독으로 이중화하지 않는다.
+
+첨부 로그에서 확인한 사실:
+- 수동 판독 최근 3턴, 배경 6메시지와 최신 답변 1개가 전달됐다. 본문에는 귀환, 재킷/부츠 제거, 양말, 카고 주머니 단서가 있었다.
+- 응답은 home/private/resting과 신체 조건만 반환했고 의복 actions는 없었다. 두 인물에게 transition=true를 반환했다.
+- 입력 기준점에 이미 후드티/플리스 츄리닝이 있었다. 이번 계산은 suitable_or_unknown_fit으로 유지했고 생성 요청은 없었다.
+- 처음 홈웨어가 만들어진 호출은 이 로그에 없다. 이번 로그만으로 최초 선택 원인을 확정하지 않는다.
+- suitability의 home_use는 집/휴식의 업무·정장류를 교체 대상으로 만든다. score도 집/휴식에서 홈웨어를 우대한다. 최초 선택 점수와 기존 옷 제거 사유를 분리해야 한다.
+
+완료 동작:
+1. 본문에서 확인된 현재 착용과 완료된 의복 행동을 먼저 읽는다.
+2. 저장 착장과의 충돌, 실제 새 착장 요구를 인물별로 판단한다.
+3. 변화가 없으면 유지하고, 필요하면 관련 슬롯만 기존 선택·보완·생성에 연결한다.
+4. 귀환·날짜 변경·시간 경과는 재검토 단서이며 환복 사실 자체가 아니다.
+
+### 23.2 변경 범위와 유지 계약
+
+수정 파일은 원칙적으로 기존 BLUEPRINT.md, outfit-rules.js, core.js, prompts.js, host.js와 해당 tests로 제한한다. 추가 배포 설명이 필요할 때 README.md, 버전 파일을 마지막에 정리한다. 새 런타임 모듈·백업 파일·로그 파일을 만들지 않는다.
+
+- 취향 분석·옷장 생성·번역·OUTFIT_ITEMS·JSON_REPAIR 프롬프트는 변경하지 않는다.
+- 변경 후보는 SCENE과 그 반환 형식을 복구하는 SCENE_RECOVERY뿐이다. 실제 문자열 변경은 아래 최종 후보를 기준으로 별도 diff에서 확인한다.
+- 새 필드는 선택 필드다. 구 응답과 구 저장 자료를 계속 읽는다. 필드 누락·추가·표현 차이를 전체 실패로 만들지 않는다.
+- 새 장면 판단 때문에 기존 자료를 재분석하거나 초기화하지 않는다.
+- 최신 확정 착장, 표시 기록, 브랜치/채팅 연결, 리롤 보존, 서버 저장 경로는 기존 계약을 유지한다.
+- 매크로에는 기존 outfitInjection/outfitText를 통해 현재 착장만 들어간다.
+- 사건·시간·장소·의복 행동을 롤플에 요구하거나 새로 만들어 내지 않는다.
+- 내부 영어 원본과 한국어 표시 별칭, 브랜드 및 세계관 기준을 유지한다.
+
+### 23.3 반환 계약: 기존 구조에 선택 필드 두 개 추가
+
+인물별 changes.character / changes.persona에 review와 observed를 추가한다. 기존 context, actions, transition은 유지한다.
+
+```json
+{
+  "changes": {
+    "character": {
+      "review": {
+        "needed": true,
+        "reason": "Current cargo-trouser evidence conflicts with saved sweatpants."
+      },
+      "observed": [
+        {"category": "bottom", "name": "cargo trousers"}
+      ]
+    }
+  }
+}
+```
+
+이 예시는 형식 설명용이며 SCENE에 사례로 삽입하지 않는다.
+
+| 필드 | 의미 | 코드 처리 |
+| --- | --- | --- |
+| review.needed | 저장 착장의 자동 재평가 필요 여부 | boolean 우선, 기존 bool 함수로 yes/no 등도 수용. 누락은 미지정 |
+| review.reason | 짧은 영어 근거, 최대 160자 | 진단용. 자연어 문구를 분기 키로 쓰지 않음. 누락 허용 |
+| observed | 현재 실제 착용을 확인한 품목만 | 부분 목록. 목록에 없는 옷을 벗겼다고 보지 않음 |
+| observed의 category/name/color/brand/wearing/wearingKo/layer | 기존 의복 필드와 같은 의미 | 색·브랜드·착용 상태는 본문에 있는 것만. 기존 변환/별칭 사용 |
+| actions | 실제 발생한 착용/제거/조정/탈의 | 기존 순서와 처리 의미 유지 |
+| transition | 실제 의복 역할의 장면 경계 | 날짜/시간 표시나 같은 목적의 방 이동만으로 true를 반환하지 않음 |
+
+observed에는 op를 넣지 않는다. 현재 입었다는 확인을 wear라는 새 사건으로 위조하지 않는다. 관찰 목록은 전체 인벤토리나 전체 복장 생성 요청이 아니다.
+
+현재 worn 입력에 품목별 origin(explicit/manual/automatic)을 선택적으로 추가한다. 기존 person.origins에서 코드가 넣으며 모델에게 출처를 추정시키지 않는다. 전체 취향·옷장·과거 기록은 추가 전송하지 않는다. 내부 한국어 source 분류를 영어 origin과 혼용하지 않는다.
+
+review/observed는 이번 요청의 사실과 판단 자료다. 별도 영구 타임라인·활동 이력을 만들지 않는다. 반영된 현재 옷과 origins, 기존 context가 다음 턴의 연속성 기준이 된다. 검토 이유·관찰 원문을 매턴 누적 저장하지 않는다.
+
+### 23.4 처리 우선순위와 예/아니오의 범위
+
+review.needed=false는 자동 추천 교체를 생략하는 힌트다. 실제 사실이나 필수 안전장치를 무효화하는 전체 잠금으로 사용하지 않는다.
+
+처리 순서:
+1. 모델 응답 정규화: context/actions/observed/review 중 해석 가능한 부분을 확보한다.
+2. 최종 시점의 observed와 실제 actions를 대조해 현재 착용 사실을 구성한다. 같은 슬롯에 관찰과 행동이 함께 있으면 완료된 최종 사실을 우선한다. 명시 remove/nude를 관찰 목록으로 되돌리지 않는다.
+3. 실제 행동과 본문 착용 사실을 반영한다.
+4. 코드가 본문-저장 착장의 충돌, 변경된 needs/conditions, 실제 공공장소 전환, 미확인 최초 구성 여부를 계산한다.
+5. 자동 재평가 여부를 결정한다.
+6. 재평가할 슬롯만 기존 기억 → 적합한 보유품 → 부족 요청 생성 순서로 처리한다.
+7. 기존 validateState와 저장 경로로 확정한다.
+
+| 입력 상황 | 처리 |
+| --- | --- |
+| review=false, 행동·관찰 충돌·새 필수 요구 없음 | 옷 유지, 유효 context/환경만 갱신 |
+| review=false인데 명시 remove/wear/adjust/nude 있음 | 실제 행동 우선 반영, 모순을 로그에 기록 |
+| review=false인데 본문 관찰이 저장된 자동 추정과 충돌 | 해당 슬롯 재검토, 다른 슬롯은 유지 |
+| review=false인데 완료된 외출/새 신체 제약에 필수 보완 발생 | 기존 최소 보완 실행. false로 맨발·완전 탈의를 고착시키지 않음 |
+| review=true인데 구체적 근거·기존 변경 조건 없음 | 계산은 재검토하되 유지 가능. 강제 환복하지 않음 |
+| review 누락/불명 | 구 응답처럼 기존 사실과 변경 기준으로 판단 |
+| 새 선택 필드만 해석 불가 | 해당 필드만 보류, 기존 유효 actions/context는 처리 |
+
+### 23.5 현재 착용 관찰의 매칭과 모호성 처리
+
+outfit-rules.js에 작은 순수 helper를 추가해 observed를 기존 sameGarment/slot/matchingGroup 및 품목 출처와 연결한다. 별도 이름 사전이나 모델별 기준을 만들지 않는다.
+
+- 현재 품목이 관찰을 만족하면 같은 ID·브랜드·착용 상태를 유지한다. 동일 품목의 새로운 착용 상태만 확인되면 그 부분을 갱신한다.
+- 현재 자동 추정 품목과 분명히 다른 종류이면 해당 슬롯을 교정한다. 카고 바지 단서가 있는데 플리스 츄리닝이 같은 bottom이라는 이유로 관찰을 만족한 것으로 처리하지 않는다.
+- 자동 생성 결과 연결에 쓰는 넓은 category/slot 기준과, 현재 본문의 정체성 충돌 판정을 구분한다. 같은 신발 카테고리라는 이유로 명시된 부츠를 펌프스로 확인하지 않는다.
+- 단순 trousers 같은 포괄 관찰은 기존 cargo trousers와 충돌하지 않는다.
+- 양말·브라·팬티 등 슬롯 구분, 장신구/일반 소품 분리는 기존 기준을 재사용한다.
+- 반지 하나의 관찰로 모든 장신구를 지우지 않는다. 겹쳐 입기/소품 다중 착용의 기존 동작을 유지한다.
+- 현재 명시/수동 품목도 최신 본문의 분명한 변경·정체성 증거와 충돌하면 검토한다. 모호한 단서만으로 덮어쓰지 않는다.
+- 주머니 하나, 천의 촉감, 이름 없는 소지품처럼 의복 종류를 확정할 수 없는 단서는 정확한 아이템·브랜드·색을 새로 확정하지 않는다. 추정만으로 품목을 바꾸지 않고 판단 보류 이유를 기록한다.
+- 알 수 없는 품목의 실제 착용이 확정되고 기존 품목으로 충족되지 않으면, 기존 explicit 부족 요청 경로에 연결한다. 내부 진단에서 observed 확인과 실제 wear 사건은 구분한다.
+- 관찰 충돌 교정으로 교체된 자동 추정품을 곧바로 이전 착장 복원 기억으로 되살리지 않게 updateOutfitMemory 연계를 검사한다. 실제 새 품목을 입었다는 허구 사건·구매 기록은 남기지 않는다.
+
+### 23.6 귀가·시간·날짜와 기존 적합성 규칙
+
+- suitability의 home_use를 기존 옷의 자동 교체 사유에서 제거한다. 집/휴식이라는 이유만으로 업무복·정장 착용을 실패로 판정하지 않는다.
+- score의 home/casual 선호는 실제 최초 구성이나 이미 승인된 부족분 선택에만 영향을 준다. 점수가 더 높은 옷이 있다는 이유로 현재 옷을 교체하지 않는다.
+- 복장 역할은 목적지와 분리해 읽는다. 귀환 직후 옷은 직전 복장 흐름을 유지할 수 있고, 집에서 재택근무·행사 준비 등도 가능하다.
+- 날짜 변경·기상·큰 시간 경과는 비교를 시작하는 단서다. 날짜만 바뀌었고 같은 옷의 연속성이 확인되면 유지할 수 있다.
+- 실제 환복/씻기/탈의/다른 복장 확인은 반영한다. 단순 정서적 안정·앉음·대화 재개는 환복 근거가 아니다.
+- 출근/외출 완료 후 필요한 신발·속옷·기후 보호 등은 기존 publicTransition 보완을 유지한다.
+- 기존 temporary 타월·환자복, 수면/씻기, 신체 제약·회복, 예외 해제와 신규 생성 정책을 유지한다.
+- 집에 돌아왔다는 이유로 재킷/부츠를 자동 제거하지 않는다. 실제 제거가 확인된 부분만 반영한다.
+
+### 23.7 모델 읽기 순서와 영어 지시문 후보
+
+SCENE의 INPUT/READ ORDER/GARMENT EVENTS와 출력 예시를 필요한 범위에서 교체·보완한다. 무관한 섹션을 다시 쓰지 않는다. 다음 문구는 구현 때 적용할 영어 후보이며 현재 실행 프롬프트에는 미반영이다.
+
+READ ORDER 후보:
+```text
+1. Map participants to character or persona.
+2. Read the latest narrative and its date/time sequence. Use background for continuity, not to replay earlier actions. Distinguish arrival from changing clothes and plans from completed events.
+3. Establish each person's current setting, physical constraints, actual garment events, and explicitly observed worn garments.
+4. Compare this evidence with saved worn items. Report whether reassessment is needed and a short English reason. A new date, elapsed time, or being at home alone does not prove a clothing change.
+5. Return only supported changes and observations.
+```
+
+REVIEW / OBSERVED 후보:
+```text
+review is optional: {"needed":true|false,"reason":"short English reason"}.
+It requests reassessment, not a mandatory outfit replacement. Set needed when current clothing evidence conflicts with saved items or established circumstances require clothing changes. Return false when the current outfit can continue. Never invent a change to justify the decision.
+
+observed is an optional partial list of garments explicitly established as currently worn. Use category, name, and only stated color, brand, wearing, wearingKo, or layer. It confirms current facts; it is not a dressing event or a full inventory. Omitted items are not removed. Do not infer an exact garment, color, or brand from an ambiguous detail.
+```
+
+보완 문구 후보:
+```text
+Saved automatic selections are provisional when contradicted by current narrative. Returning home does not establish a change into homewear. Report actual removal, adjustment, or dressing separately in actions. Observations must describe the final established state and must not restore a garment explicitly removed in the same evidence.
+```
+
+SCENE_RECOVERY는 위 optional 필드를 원문에 있을 때만 보존하고, review/reason/observed를 새로 추론하지 않게 한다. 기존 반환 문장에 동일 구조를 추가한다. JSON_REPAIR는 그대로 둔다.
+
+최종 프롬프트 문자열과 모델 입력 예시는 구현 시 BLUEPRINT에 확정본을 남기고 diff로 승인 범위를 확인한다. 특정 캐릭터 이름·이번 사건 예시를 실행 프롬프트에 삽입하지 않는다.
+
+### 23.8 파일·함수별 수정 지도
+
+| 파일 | 수정 지점 | 연결 확인 |
+| --- | --- | --- |
+| outfit-rules.js | canonicalObject / normalizeSceneResponse | 새 선택 필드 정규화, 새 필드만 있는 유효 응답 판별, partial/unchanged 보존 |
+| outfit-rules.js | mergeEnvironmentFacts | review/observed만 있는 인물 변화가 환경 보완 과정에서 사라지지 않게 함 |
+| outfit-rules.js | resolveOutfit 및 작은 관찰 helper | 실제 사실 우선 반영, 자동 평가 범위 결정, 기존 missing 구조 사용 |
+| outfit-rules.js | suitability / score / matchKey | home_use 교체 제거, 점수는 선택에만 사용, 과거 캐시로 새 관찰 무시 방지 |
+| outfit-rules.js | sceneRequest | worn에 영어 origin을 선택적으로 전달 |
+| core.js | Engine.read | 기존 sceneResult와 새 fields 연결, 생성 전후 재계산에 관찰 반복 적용의 멱등성 확인 |
+| core.js | updateOutfitMemory 연계 / meaningful / validateState | 잘못된 추정 복원 차단, 순수 진단 변화로 실제 옷 변경 처리하지 않음 |
+| core.js | Store.load / restoreBranchForMessages / saveManualOutfit | 원칙적으로 형식 변경 없음, 기존 snapshot/head와 새 반영 결과 호환 검사 |
+| prompts.js | SCENE만 | 새 읽기 순서·반환 optional 필드 연결 |
+| host.js | SCENE_RECOVERY만 | 본 응답과 복구 응답 계약 일치. closeJSON/재시도 예산 그대로 |
+| model-schema.js | toModelData/fromModelData | category 변환 재귀와 origin 통과 확인. 필요 없으면 파일 수정하지 않음 |
+| tests | core/outfit-rules/lifecycle/storage/browser | 아래 단계별 회귀·배포 기준 |
+| ui.js/message-outfits.js/index.js | 기존 표시·이벤트 경로 | 새 필드 때문에 수정이 필요하지 않으면 그대로 두고 회귀 검사만 수행 |
+
+상태 필드 추가를 피하고 판독용 선택 필드로 해결한다. 따라서 기존 서버 분할 저장·정리 대상 파일·displayLimit 및 chatTurns의 상한을 변경하지 않는다. matchKey는 규칙 revision만 올리되 최신 착장 자체를 지우지 않는다.
+
+### 23.9 단계별 구현 순서와 진입 조건
+
+각 단계는 수정 → 해당 검사 → 실제 diff/호출부 확인 → 이 설계서 진행표 갱신 순서다. 실패 상태에서 다음 단계로 진행하지 않는다. 새 프롬프트는 6단계 전까지 활성화하지 않는다.
+
+| 순서 | 작업 | 완료 조건 / 다음 단계에 넘길 결과 |
+| --- | --- | --- |
+| 0 | 1.6.11 기준·현재 diff·기존 181개 검사 확인, 합의 프롬프트 기준본 확보 | 기존 실패와 신규 실패 구분 가능. 불필요한 파일/초기화 없음 |
+| 1 | normalizeSceneResponse에 review/observed 선택 계약 추가 | 구 응답 결과 동일. 새 필드만 있는 응답 인식. 누락/yes-no/부분 오류 수용. 정규화된 단일 구조를 2단계가 사용 |
+| 2 | sceneRequest origin 전달, 관찰 helper와 행동 우선순위 구현 | 본문 확인을 행동으로 위조하지 않음. 부분 목록/장신구/슬롯/모호한 단서 검사 통과. normalized facts → 관찰 적용 결과 확정 |
+| 3 | home_use 수정과 재평가 결정 연결 | false가 실제 행동/필수 보완을 막지 않음. true도 강제 환복 안 함. 귀환 유지·실제 환복·외출 최소 보완 통과 |
+| 4 | Engine.read 기존 선택·생성 2회 resolve와 메모리·검증 연결 | 생성 전후 결과 멱등, requestId와 policy 유지, 생성 실패 전체 보존. 관찰 충돌 추정품이 기억에서 재등장하지 않음 |
+| 5 | 저장·복원·브랜치·리롤 및 표시 호환 검수 | current/head/checkpoint/display가 같은 착장을 가리킴. 늦은 응답 폐기·수동 수정·다른 방/브랜치 분리 통과 |
+| 6 | SCENE 및 SCENE_RECOVERY에 확정 후보 적용 | 실행 프롬프트가 1~5단계 실제 계약과 일치. 다른 프롬프트 불변. 구 모델 응답도 계속 처리 |
+| 7 | 기존 작업 로그에 review·관찰·판단 원인 추가 | 요청→정규화→확인/보류→선택/생성→저장 추적, 기존 묶음·전체복사 유지. 새 콘솔 줄/영구 로그 파일 추가 없음 |
+| 8 | 전체 검사·PC/모바일·설계서 대조·청소·버전 정리 | 아래 23.10 전부 통과, 배포 후보와 잔여 한계 보고. 업로드는 그 단계의 사용자 지시에 따름 |
+
+단계별 진행표에는 완료/미완료, 수정 함수, 통과 검사, 다음 단계 영향만 기록한다. 소스 복사본이나 중간 백업을 단계마다 만들지 않는다. 구현 중 계약이 바뀌면 이미 완료한 관련 검사도 다시 통과시킨 뒤 진행한다.
+
+### 23.10 검수 시나리오와 배포 기준
+
+| 시나리오 | 기대 결과 |
+| --- | --- |
+| 업무/임무/행사 뒤 막 귀가, 환복 없음 | 기존 복장 유지. 집/휴식만으로 홈웨어 교체 금지 |
+| 귀환하며 재킷/부츠만 제거 | 해당 품목만 제거. 상하의·속옷 유지 |
+| 자동 츄리닝과 현재 명시 카고 바지 충돌 | 하의만 교정/보류 판단. 근거 없는 색·브랜드·전신 세트 생성 금지 |
+| 포괄적인 바지/주머니 단서 | 구체적 종류가 불명하면 기존 구체 품목을 임의 교체하지 않음 |
+| 같은 거실에서 대화만 계속 | 불필요한 transition/교체·추가 생성 없음 |
+| 다음 날 기상·긴 시간 경과 | 재검토 가능, 날짜만으로 새 조합 강제하지 않음 |
+| 실제 환복·샤워·탈의·수면 | 완료 사실 반영, 제거한 옷을 observed로 복원하지 않음 |
+| 맨발·탈의 이후 실제 외출 | 명시 예외 없으면 기존 필수 보완. 같은 사적 장면에는 임의 보충 없음 |
+| 부상·임신·입원 및 해소 | 기존 지속 상태/해제 규칙 유지, 필요한 슬롯만 조정 |
+| 반지·목걸이·브라·팬티·양말 | 같은 큰 카테고리라는 이유로 대체/삭제하지 않음 |
+| review=false와 명시 행동이 모순 | 행동 우선. 전체 판독 거절하지 않음 |
+| review=true지만 실질 변화 불필요 | 착장 유지 가능, 검토 여부가 환복 명령이 되지 않음 |
+| review/observed 누락·잘못된 한 필드 | 유효 기존 facts 적용, 해당 부분만 보류·로그 |
+| 보유품 적합/부적합·생성 정책 off/low/medium/high | 기존 선택·생성 정책과 requestId 연결 유지 |
+| 신규 생성 응답·모델 오류·취소·채팅 전환 | 생성 이전 정상 착장/저장 기준점 유지 |
+| 리롤 100회·삭제·스와이프·하이드·새로고침 | 최신 확정 상태 보존, 다른 방·브랜치에 혼입 없음 |
+| 읽기 2턴·보관 4개, 입력 100 | 기존 읽기 범위/보관 상한 50턴/20개 유지 |
+| 본창·플로팅·답변 아래 메모, PC/모바일 | 동일 현재 착장, 기존 펼침/접기/버튼·폰트 유지 |
+| 매크로·원문 채팅 | 착장만 주입. review/observed/이유/JSON/진단·원문 인용 유출 없음 |
+| 로그 복사·서버 정리 | 전체 묶음 복사 가능. 실제 사용 자료 삭제 없음 |
+
+전체 JavaScript 문법, Node 단위/통합 검사, 모의 서버·모델 PC/모바일 브라우저 검사를 수행한다. 원문 첨부는 로컬 재현에만 쓰고 저장소 fixture에는 신원을 뺀 최소 중립 사례를 사용한다. 실제 모델 품질 검사와 모의 검사 결과를 구분한다. 테스트 결과를 미리 통과로 기입하지 않는다.
+
+배포 전 마지막 대조: 본 반환 계약 ↔ 정규화 ↔ Engine ↔ resolve ↔ missing/생성 ↔ 저장/복원 ↔ UI/매크로 ↔ 복구 프롬프트 순서로 누락을 확인한다. 사용하지 않는 코드와 임시 검사 산출물만 정리하고 실제 옷장·취향·착장·채팅 자료는 삭제하지 않는다.
+
+### 23.11 현재 진행 상태
+
+- 설계서 작성: 완료.
+- 0단계: 기존 181개 검사 통과, 1.6.11 기준과 프롬프트 원본 확보.
+- 1단계: review/observed 선택 필드 정규화 및 구 응답/부분 오류 수용 검사 통과.
+- 2단계: origin 전달, 관찰과 사건 구분, 부분 착장·다중 장신구·겹쳐 입기·명시 제거 우선 검사 통과.
+- 3단계: home_use 교체 제거, false와 필수 사실/보완의 우선순위, 귀환·날짜 재검토 유지 검사 통과.
+- 4단계: 기존 생성 요청/재계산/검증/저장 연결 및 교정된 추정 기억 제거 검사 통과. 생성 실패 시 기존 브랜치 보존.
+- 5단계: 기존 저장·복원·최신 상태·리롤·브랜치·기기 간 서버 재접속 회귀 검사 통과.
+- 6단계: SCENE/SCENE_RECOVERY 적용. 다른 분석·옷장·번역 프롬프트와 JSON_REPAIR는 원문 대조로 불변 확인.
+- 7단계: 기존 decision 로그 안에 review, observed_worn, observation_missing, observation_deferred 및 superseded 정보를 추가. 새 로그 파일/개별 콘솔 메시지는 만들지 않음.
+- 8단계: 전체 단위/통합 188개, 전체 JavaScript 문법, PC/모바일 브라우저 회귀와 새 관찰 생성·저장·다음 판독 유지 검사가 통과. 배포 후보 1.6.12.
+
+### 23.12 최종 구현 차이·한계·배포 전 정리
+
+- 자동 판독이 행동 동사 없는 현재 착용 단서도 후보로 인식하도록 scene-gate.js를 소폭 보완했다. 직전 최대 2개 메시지의 동일 관찰 표현은 반복 호출을 억제하며 순수 대화는 계속 생략한다. 이 단계는 6단계 연결 직후 검사에서 후보 누락을 확인해 기존 lifecycle 검사와 함께 반영했다.
+- review는 선택적인 재검토 힌트다. false가 명시 사실·실제 신체 제약·외출 필수 보완을 막지 않고, true도 구체적인 기존 변경 조건 없이 환복시키지 않는다. 자유문장 reason을 코드 분기로 해석하지 않는다.
+- 관찰은 실제 wear 사건으로 변환하지 않는다. 다만 부족한 확인 품목의 생성은 기존 explicit 요청 계약을 재사용한다. 진단에서는 observed_worn/observation_missing으로 실제 의복 행동과 구분한다.
+- 동일 슬롯의 여러 겹 중 어느 옷을 교정해야 하는지 불명확하면 observation_deferred/ambiguous_layer로 보류한다. 실제 제거·탈의와 충돌하는 관찰도 적용하지 않는다.
+- 공통 의복명 정규화에서 sweatpants/joggers에 trousers 상위형을 함께 반영했다. 포괄적 바지 관찰만으로 기존 트레이닝 바지를 교체하지 않고 cargo 같은 구체 단서가 충돌할 때만 교정한다.
+- 현재 품목의 종류·브랜드·색을 제자리에서 변경하지 않고 기존 보유품을 선택하거나 검증된 추가품을 사용한다. 관찰로 대체된 잘못된 추정 ID만 해당 인물 착장 기억에서 제외한다. 옷장·다른 방·브랜치의 실제 자료는 삭제하지 않는다.
+- 실행 확정 프롬프트의 단일 원본은 prompts.js의 SCENE과 host.js의 SCENE_RECOVERY다. 23.7 후보를 위 코드 계약에 맞춰 반영했으며, 배경의 지속 착용 사실 참조와 review.reason 예외를 명시했다. 특정 사용자·사례를 삽입하지 않았다.
+- 검사는 모의 서버·모델과 중립적인 재현 데이터로 수행했다. 실제 외부 모델에 유료 요청을 새로 보내거나 향후 모든 서술의 해석 정확도를 보장한 결과가 아니다.
+- 임시 test-results 이미지는 확인 후 배포 전에 삭제한다. 개인 로그 원문과 채팅 fixture는 저장소에 추가하지 않는다. 사용자 승인에 따라 최종 대조·검수 통과 후 업로드한다.

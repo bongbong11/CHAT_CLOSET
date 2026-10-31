@@ -18,6 +18,58 @@ const facts=context=>validateSceneFacts({changes:{character:{context}}});
 const ids=state=>state.people.character.items.map(item=>item.id);
 const home=()=>{const state=emptyState();state.people.character.context=normalizeContext({location:'home',space:'private',phase:'resting'});state.people.character.items=[shirt,pants,briefs];return state;};
 
+test('장면 검토와 현재 착용 관찰은 선택 필드이며 일부 오류가 기존 사실을 차단하지 않는다',()=>{
+ const parsed=normalizeSceneResponse({changes:{character:{review:{needed:'yes',reason:'Current trousers differ.'},observed:{category:'bottom',name:'cargo trousers'}}}});
+ assert.equal(parsed.outcome,'applied');assert.deepEqual(parsed.facts.changes.character.review,{needed:true,reason:'Current trousers differ.'});assert.deepEqual(parsed.facts.changes.character.observed,[{category:'하의',name:'cargo trousers'}]);
+ const partial=normalizeSceneResponse({changes:{character:{review:{needed:'uncertain'},observed:[{category:'invalid',name:'unknown'},{category:'top',name:'shirt'}],actions:[{op:'remove',category:'outerwear',name:'jacket'}]}}});
+ assert.equal(partial.outcome,'partial');assert.equal(partial.facts.changes.character.actions.length,1);assert.equal(partial.facts.changes.character.observed.length,1);assert.equal(partial.facts.changes.character.automatic,undefined);
+ const no=normalizeSceneResponse({changes:{persona:{review:{needed:false}}}});assert.equal(no.outcome,'applied');assert.equal(no.facts.changes.persona.review.needed,false);
+ assert.deepEqual(validateSceneFacts({changes:{}}),{changes:{}});
+});
+
+test('현재 관찰은 자동 추정보다 우선하고 다른 품목·출처와 영어 입력 계약을 보존한다',()=>{
+ const state=home(),sweats={...pants,id:'sweats',name:'fleece sweatpants'},cargo={...pants,id:'cargo',name:'cargo trousers'};state.people.character.items=[shirt,sweats,briefs];state.people.character.origins={sweats:'automatic'};
+ const packet=validateSceneFacts({changes:{character:{review:{needed:false},observed:[{category:'bottom',name:'cargo trousers'}]}}}),stock={character:[...state.people.character.items,cargo],persona:[]};
+ const broad=resolveOutfit(state,validateSceneFacts({changes:{character:{observed:[{category:'bottom',name:'trousers'}]}}}),stock);assert.ok(ids(broad.state).includes('sweats'));assert.deepEqual(broad.missing,[]);
+ const result=resolveOutfit(state,packet,stock);assert.deepEqual(ids(result.state),['top','briefs','cargo']);assert.equal(result.state.people.character.origins.cargo,'explicit');assert.deepEqual(result.missing,[]);assert.deepEqual(result.decisions.find(d=>d.action==='observed_worn').superseded,['sweats']);
+ assert.equal(sceneRequest(state,[]).people.character.worn[1].origin,'automatic');assert.deepEqual(resolveOutfit(result.state,packet,stock).state,result.state);
+ assert.doesNotMatch(outfitInjection(result.state),/observed|review|reason|origin|automatic/);
+ const generic=resolveOutfit(result.state,validateSceneFacts({changes:{character:{observed:[{category:'bottom',name:'trousers'}]}}}),stock);assert.ok(ids(generic.state).includes('cargo'));assert.deepEqual(generic.missing,[]);
+});
+
+test('현재 착용 관찰은 소품과 겹쳐 입은 옷을 지우지 않고 실제 제거·탈의를 되돌리지 않는다',()=>{
+ const state=home(),ring={id:'ring',category:'소품',name:'silver ring'},other={id:'other',category:'소품',name:'gold ring'},layer={...shirt,id:'layer',name:'cotton vest'};state.people.character.items.push(ring,layer);
+ const stock={character:[...state.people.character.items,other],persona:[]};
+ const packet=validateSceneFacts({changes:{character:{observed:[{category:'top',name:'Oxford shirt'},{category:'accessory',name:'gold ring'}]}}});
+ const result=resolveOutfit(state,packet,stock);assert.ok(ids(result.state).includes('ring'));assert.ok(ids(result.state).includes('other'));assert.ok(ids(result.state).includes('layer'));
+ assert.ok(result.decisions.every(decision=>!decision.superseded?.includes('layer')));
+ const ambiguous=resolveOutfit(state,validateSceneFacts({changes:{character:{observed:[{category:'top',name:'linen shirt'}]}}}),stock);assert.deepEqual(ids(ambiguous.state),ids(state));assert.deepEqual(ambiguous.missing,[]);assert.ok(ambiguous.decisions.some(d=>d.reason==='ambiguous_layer'));
+ for(const action of [{op:'nude'},{op:'remove',category:'top',name:'Oxford shirt'}]){const changed=resolveOutfit(state,validateSceneFacts({changes:{character:{observed:[{category:'top',name:'Oxford shirt'}],actions:[action]}}}),stock);assert.ok(!ids(changed.state).includes('top'));assert.deepEqual(changed.missing,[]);}
+});
+
+test('귀가·날짜 전환 재검토는 업무복 교체 명령이 아니고 실제 제거만 적용한다',()=>{
+ const state=home(),work={...pants,id:'work',name:'work cargo trousers',traits:{use:['work']}},jacket={id:'jacket',category:'겉옷',name:'work jacket'},boots={...shoes,id:'boots',name:'boots'};state.people.character.context=normalizeContext({location:'work',space:'public',phase:'working',purpose:'work'});state.people.character.items=[shirt,work,briefs,jacket,boots];
+ const result=resolveOutfit(state,validateSceneFacts({changes:{character:{context:{location:'home',space:'private',phase:'resting',purpose:'casual'},review:{needed:true,reason:'Arrived home.'},transition:true,actions:[{op:'remove',category:'outerwear',name:'work jacket'},{op:'remove',category:'footwear',name:'boots'}]}}}),{character:[...state.people.character.items,lounge],persona:[]});
+ assert.deepEqual(ids(result.state),['top','work','briefs']);assert.deepEqual(result.missing,[]);
+ const next=resolveOutfit(result.state,validateSceneFacts({changes:{character:{review:{needed:true,reason:'A new daily scene.'},transition:true}}}),{character:[...state.people.character.items,lounge],persona:[]});assert.deepEqual(ids(next.state),ids(result.state));assert.deepEqual(next.missing,[]);
+});
+
+test('검토 아니오는 실제 착용 행동과 외출·신체 제약의 필수 보완을 막지 않는다',()=>{
+ const state=home();
+ const outside=resolveOutfit(state,validateSceneFacts({changes:{character:{review:{needed:false},context:{location:'outside',space:'public',phase:'outdoors'}}}}),owned);assert.ok(ids(outside.state).includes('shoes'));
+ const removed=resolveOutfit(state,validateSceneFacts({changes:{character:{review:{needed:false},actions:[{op:'remove',category:'top',name:'Oxford shirt'}]}}}),owned);assert.ok(!ids(removed.state).includes('top'));
+ const tight=home();tight.people.character.items[1]={...pants,name:'rigid slim trousers'};const constrained=resolveOutfit(tight,validateSceneFacts({changes:{character:{review:{needed:false},context:{needs:['Avoid waist pressure']}}}}),{character:tight.people.character.items,persona:[]});assert.equal(constrained.missing[0].cause,'waist_pressure');
+});
+
+test('관찰한 새 품목은 기존 생성 경로를 거쳐 저장하며 교정 전 추정을 기억에서 되살리지 않는다',async()=>{
+ const storage=memory(),store=new Store(storage);store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=home();b.base.people.character.items[1]={...pants,id:'wrong',name:'fleece sweatpants'};b.base.people.character.origins={wrong:'automatic'};b.current=structuredClone(b.base);b.profiles.character={wardrobe:structuredClone(b.base.people.character.items)};b.baseMemory={character:{lastDressed:['top','wrong','briefs'],beforeUndress:['top','wrong','briefs']}};
+ let count=0;const packet={changes:{character:{review:{needed:true},observed:[{category:'bottom',name:'cargo trousers'}]}}},engine=new Engine(store,async()=>packet,async request=>{count++;assert.equal(request.missing.length,1);return {newItems:{character:[{...pants,name:'cargo trousers',labelKo:'카고 바지',brandKo:'유니클로',requestId:request.missing[0].requestId}]}};});
+ await engine.read('c',bid,[message(1)],{force:true});assert.equal(count,1);assert.equal(b.extra.character.length,1);assert.ok(!b.outfitMemory.character.beforeUndress.includes('wrong'));assert.ok(!b.outfitMemory.character.lastDressed.includes('wrong'));
+ const restored=new Store(storage);assert.equal(restored.branch('c',bid).current.people.character.items.find(i=>i.category==='하의').name,'cargo trousers');
+ const stable=structuredClone(b.current);await engine.read('c',bid,[message(1),message(2)],{force:true});assert.equal(count,1);assert.deepEqual(b.current,stable);
+ const failed=new Engine(store,async()=>({changes:{character:{observed:[{category:'bottom',name:'corduroy trousers'}]}}}),async()=>({newItems:{character:[]}}));const before=structuredClone(b);await assert.rejects(()=>failed.read('c',bid,[message(1),message(2),message(3)],{force:true}));assert.deepEqual(b,before);
+});
+
 test('기존 집의 빈 수동 착장도 미확인으로 복구하고 옷장이 비면 생성 요청을 만든다',()=>{
  const state=home();state.people.character.items=[];state.people.character.manualOutfit=true;state.people.character.matchKey='stale';
  const result=resolveOutfit(state,{changes:{}},owned,{}, {},{newItems:'medium'});
@@ -467,17 +519,17 @@ const lounge={id:'lounge',category:'하의',name:'drawstring lounge trousers',br
 test('변화 없는 정상 응답에서도 기존 추정 착장을 보정하고 적합한 옷과 임신 상태는 유지한다',()=>{
  const baseline=legacyPersona(),before=structuredClone(baseline),stock={character:[],persona:[...baseline.people.persona.items,lounge,{...briefs,id:'p-briefs'}]};
  const result=resolveOutfit(baseline,{changes:{}},stock);
- assert.deepEqual(result.state.people.persona.items.map(i=>i.id),['old-shirt','old-bra','lounge','p-briefs']);
+ assert.deepEqual(result.state.people.persona.items.map(i=>i.id),['old-shirt','old-slacks','old-bra','p-briefs']);
  assert.deepEqual(result.missing,[]);assert.deepEqual(result.state.people.persona.context.conditions,['pregnant']);assert.deepEqual(baseline,before);
  const same=resolveOutfit(result.state,{changes:{}},stock);assert.deepEqual(same.state,result.state);assert.ok(same.decisions.some(d=>d.reason==='already_checked'));
  assert.doesNotMatch(outfitInjection(result.state),/origins|matchKey|pregnant|requirements|home_use/);
 });
-test('낮은 생성 설정도 보유한 적합한 대체품은 사용하고 중간부터 용도에 맞는 새 품목을 요청한다',()=>{
+test('실제 허리 압박 제약은 생성 설정을 따르되 보유한 적합한 대체품을 우선한다',()=>{
  for(const policy of ['off','low','medium','high']){
-  const state=legacyPersona();state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
+  const state=legacyPersona();state.people.persona.context.needs=['Avoid waist pressure'];state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
   const result=resolveOutfit(state,{changes:{}},stock,{}, {},{newItems:policy});
-  assert.equal(result.missing.length,['medium','high'].includes(policy)?1:0);
-  if(result.missing.length){assert.equal(result.missing[0].cause,'home_use');assert.deepEqual(result.missing[0].requirements,{use:['home','casual']});}
+  assert.equal(result.missing.length,policy==='off'?0:1);
+  if(result.missing.length){assert.equal(result.missing[0].cause,'waist_pressure');assert.deepEqual(result.missing[0].requirements,{fit:['loose','adjustable','maternity']});}
   else assert.ok(result.decisions.some(d=>d.action==='generation_skipped'));
   assert.ok(resolveOutfit(state,{changes:{}},{character:[],persona:[...stock.persona,lounge]}, {}, {},{newItems:policy}).state.people.persona.items.some(i=>i.id==='lounge'));
  }
@@ -504,13 +556,13 @@ test('명시된 옷과 수동 착장은 보정으로 덮지 않으며 실제 새
  const kept=resolveOutfit(state,{changes:{}},stock);assert.ok(kept.state.people.persona.items.some(i=>i.id==='old-slacks'));
  const room=resolveOutfit(kept.state,validateSceneFacts({changes:{persona:{transition:true}}}),stock);assert.ok(room.state.people.persona.items.some(i=>i.id==='old-slacks'));
  const arrived=structuredClone(kept.state);arrived.people.persona.context=normalizeContext({location:'outside',space:'public',phase:'outdoors'});
- const moved=resolveOutfit(arrived,validateSceneFacts({changes:{persona:{transition:true,context:{location:'home',space:'private',phase:'resting'}}}}),stock);assert.ok(moved.state.people.persona.items.some(i=>i.id==='lounge'));
+ const moved=resolveOutfit(arrived,validateSceneFacts({changes:{persona:{transition:true,context:{location:'home',space:'private',phase:'resting'}}}}),stock);assert.ok(moved.state.people.persona.items.some(i=>i.id==='old-slacks'));
  const store=new Store(memory());store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.current=state;b.profiles.persona={wardrobe:stock.persona};
  saveManualOutfit(b,state.people,[message(1)],'chat');assert.equal(b.current.people.persona.origins['old-slacks'],'explicit');assert.equal(b.current.people.persona.manualOutfit,undefined);
  assert.ok(resolveOutfit(b.current,{changes:{}},stock).state.people.persona.items.some(i=>i.id==='old-slacks'));
 });
 test('새 옷 허용값 변경은 재평가하되 같은 장면을 매번 새로 채우지 않는다',()=>{
- const state=legacyPersona();state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
+ const state=legacyPersona();state.people.persona.context.needs=['Avoid waist pressure'];state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
  const off=resolveOutfit(state,{changes:{}},stock,{}, {},{newItems:'off'});
  const same=resolveOutfit(off.state,{changes:{}},stock,{}, {},{newItems:'off'});assert.deepEqual(same.missing,[]);assert.deepEqual(same.state,off.state);
  assert.equal(resolveOutfit(off.state,{changes:{}},stock,{}, {},{newItems:'medium'}).missing.length,1);
@@ -525,11 +577,12 @@ test('가능한 기존 겉옷의 여밈 조절은 신체 제약에 맞춰 같은
  const state=home(),jacket={id:'jacket',category:'겉옷',name:'button-front jacket',wearing:'fully buttoned'};state.people.character.items.push(jacket);state.people.character.context.needs=['Avoid abdominal pressure'];
  const result=resolveOutfit(state,{changes:{}},{character:[...owned.character,jacket],persona:[]});assert.equal(result.state.people.character.items.find(i=>i.id==='jacket').wearing,'worn open');assert.deepEqual(result.missing,[]);
 });
-test('부족한 홈웨어와 팬티만 생성하며 저장 재진입과 다음 판독에서 재사용한다',async()=>{
+test('실제 압박 제약의 하의와 부족한 팬티만 생성하며 저장 재진입과 다음 판독에서 재사용한다',async()=>{
  const storage=memory(),store=new Store(storage);store.createCharacter('c','C');const bid=store.createBranch('c','B'),b=store.branch('c',bid);b.base=legacyPersona();b.current=structuredClone(b.base);b.profiles.persona={fields:{'스타일':{value:'Restrained casual clothing'}},wardrobe:structuredClone(b.base.people.persona.items)};
  let count=0,seen;const generate=async request=>{count++;seen=request;return {newItems:{persona:request.missing.filter(n=>n.who==='persona').map(n=>n.slot==='briefs'?{...briefs,requestId:n.requestId,labelKo:'검정 팬티',brandKo:'유니클로'}:{...lounge,requestId:n.requestId})}};};
+ b.base.people.persona.context.needs=['Avoid waist pressure'];b.current=structuredClone(b.base);
  const engine=new Engine(store,async()=>({changes:{}}),generate);await engine.read('c',bid,[message(1)],{force:true});
- assert.equal(count,1);assert.equal(seen.missing.length,2);assert.equal(new Set(seen.missing.map(n=>n.requestId)).size,2);assert.ok(seen.missing.some(n=>n.slot==='briefs'));assert.ok(seen.missing.some(n=>n.cause==='home_use'));assert.equal(b.extra.persona.length,2);
+ assert.equal(count,1);assert.equal(seen.missing.length,2);assert.equal(new Set(seen.missing.map(n=>n.requestId)).size,2);assert.ok(seen.missing.some(n=>n.slot==='briefs'));assert.ok(seen.missing.some(n=>n.cause==='waist_pressure'));assert.equal(b.extra.persona.length,2);
  assert.ok(b.current.people.persona.items.some(i=>i.name==='drawstring lounge trousers'));assert.equal(underwearSlot(b.current.people.persona.items.find(i=>i.name==='briefs')),'briefs');
  await engine.read('c',bid,[message(1),message(2)],{force:true});assert.equal(count,1);
  const restored=new Store(storage),next=new Engine(restored,async()=>({changes:{}}),generate);await next.read('c',bid,[message(1),message(2),message(3)],{force:true});assert.equal(count,1);assert.equal(restored.branch('c',bid).extra.persona.length,2);
@@ -543,7 +596,7 @@ test('생성이 다른 속옷 슬롯을 돌려주면 저장을 부분 변경하�
 
 
 test('옷장에 적합한 품목이 추가되면 같은 상황도 다시 비교하고 불필요한 생성은 하지 않는다',()=>{
- const state=legacyPersona();state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
+ const state=legacyPersona();state.people.persona.context.needs=['Avoid waist pressure'];state.people.persona.items.push({...briefs,id:'p-briefs'});const stock={character:[],persona:state.people.persona.items};
  const checked=resolveOutfit(state,{changes:{}},stock,{}, {},{newItems:'off'});
  const updated=resolveOutfit(checked.state,{changes:{}},{character:[],persona:[...stock.persona,lounge]}, {}, {},{newItems:'off'});
  assert.ok(updated.state.people.persona.items.some(i=>i.id==='lounge'));assert.deepEqual(updated.missing,[]);

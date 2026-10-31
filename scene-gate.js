@@ -5,6 +5,8 @@ const movement=/(?:(?:이제|잠시\s*후|그\s*후|이후|다음\s*장면).{0,4
 const conditionChange=/임신|부상|다쳤|다치고|깁스|입원|퇴원|회복|붓기|부종|허리.{0,15}(?:조이|끼|압박)|\b(?:pregnan\w*|injur\w*|hospitali[sz]\w*|admitted|discharged|recovered|healed|swollen|swelling|cast|too tight|waist pressure)\b/i;
 const climateCue=/\b(?:rain(?:ed|ing)?|snow(?:ed|ing)?|overcast|cloudy|fog(?:gy)?|winter|summer|autumn|spring|freezing|temperature|degrees?)\b|비가|눈이|날씨|기온|한겨울|한여름|쌀쌀|폭염|한파/iu;
 const climateChange=/\b(?:began|started|stopped|ended|turned|became|grew)\b.{0,40}\b(?:rain\w*|snow\w*|cold|hot|cloudy|clear)\b|\b(?:rain\w*|snow\w*)\b.{0,30}\b(?:began|started|stopped|ended)\b|(?:비가|눈이).{0,20}(?:내리|그쳤|시작|멎)|날씨가.{0,20}(?:바뀌|추워|더워)/iu;
+// Current-wear evidence can contradict a saved estimate without a dressing verb.
+const clothingObservation=/\b(?:wearing|wore|clad in|dressed in)\b|(?:옷차림|차림으로|입은\s|신은\s|걸친\s)|\b(?:his|her|their)\s+(?:[\w-]+\s+){0,4}(?:shirt|trousers|pants|skirt|dress|shoes|coat|jacket|jumper|socks|sleeves)\b|\b(?:his|her|their)\s+(?:[\w-]+\s+){1,3}pocket\b/i;
 function metadata(content){
  const out={};const source=content.replace(/<[^>]*>/g,'\n').replace(/\*\*|__/g,'');
  for(const [key,re] of Object.entries({place:/(?:^|\n|\|)\s*[^\p{L}\p{N}\n|]{0,8}(?:Loc|Location|장소|위치|현재\s*장소)\s*[:：]\s*([^\n|]+)/iu,date:/(?:^|\n|\|)\s*[^\p{L}\p{N}\n|]{0,8}(?:Date|날짜)\s*[:：]\s*([^\n|]+)/iu,time:/(?:^|\n|\|)\s*[^\p{L}\p{N}\n|]{0,8}(?:Time|시간)\s*[:：]\s*(\d{1,2}:\d{2})/iu,season:/(?:^|\n|\|)\s*[^\p{L}\p{N}\n|]{0,8}(?:Season|계절)\s*[:：]\s*([^\n|]+)/iu,weather:/(?:^|\n|\|)\s*[^\p{L}\p{N}\n|]{0,8}(?:Weather|날씨)\s*[:：]\s*([^\n|]+)/iu,condition:/(?:^|\n|\|)\s*[^\p{L}\p{N}\n|]{0,8}(?:Physical (?:state|condition)|Body condition|신체\s*상태)\s*[:：]\s*([^\n|]+)/iu})){const match=source.match(re);if(match)out[key]=match[1].trim().toLowerCase();}
@@ -12,6 +14,8 @@ function metadata(content){
 }
 export function needsOutfitRead(messages,start){
  if(start===0)return messages.length>0;
+ const observationTerms=content=>[...content.matchAll(new RegExp(clothingObservation.source,'gi'))].map(match=>match[0].toLowerCase());
+ const previousObservations=new Set(messages.slice(Math.max(0,start-2),start).flatMap(message=>observationTerms(message.content)));
  let previous={};for(const m of messages.slice(0,start))previous={...previous,...metadata(m.content)};
  for(const m of messages.slice(start)){
   const next=metadata(m.content);
@@ -19,7 +23,8 @@ export function needsOutfitRead(messages,start){
   if(typeof next.temperature==='number'&&(typeof previous.temperature!=='number'||Math.abs(next.temperature-previous.temperature)>=3||[12,26].some(edge=>(next.temperature>=edge)!==(previous.temperature>=edge))))return true;
   if(next.time&&previous.time){const minutes=s=>s.split(':').reduce((a,n)=>a*60+Number(n),0);const delta=minutes(next.time)-minutes(previous.time);if(delta<0||delta>=90)return true;}
   const narrative=m.content.replace(/<Scene_Info\b[^>]*>[\s\S]*?<\/Scene_Info>/gi,'');
-  if(clothingAction.test(narrative)||transition.test(narrative)||movement.test(narrative)||conditionChange.test(narrative))return true;
+  const freshObservation=observationTerms(narrative).some(term=>!previousObservations.has(term)||/^(?:wearing|wore|clad in|dressed in)$/.test(term));
+  if(clothingAction.test(narrative)||freshObservation||transition.test(narrative)||movement.test(narrative)||conditionChange.test(narrative))return true;
   if(climateCue.test(narrative)&&(!Object.keys(readEnvironment(narrative)).length||climateChange.test(narrative)))return true;
   previous={...previous,...next};
  }

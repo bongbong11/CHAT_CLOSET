@@ -47,7 +47,7 @@ const aliases={
  key:{physical_conditions:'conditions',resolved_conditions:'resolvedConditions',resolved_needs:'resolvedNeeds',physical_state:'conditions',clothing_needs:'needs',clothing_constraints:'needs',temp:'temperature',location_type:'location',activity_phase:'phase',operation:'op',action:'op',type:'op',garment:'name',item_name:'name',wearing_state:'wearing',wearing_ko:'wearingKo',sceneko:'sceneKo',scene_ko:'sceneKo'},
 };
 const bool=value=>typeof value==='boolean'?value:['true','yes','1'].includes(word(String(value)))?true:['false','no','0'].includes(word(String(value)))?false:undefined;
-function canonicalObject(value){return object(value)?Object.fromEntries(Object.entries(value).map(([key,v])=>[aliases.key[word(key)]||[...Object.keys(VALUES),'changes','people','characters','context','state','actions','events','transition','category','op','name','color','brand','wearing','wearingKo','layer','scene','sceneKo','time','place','activity','reason','reasoning','confidence','noChange','status','result','data','conditions','needs','resolvedConditions','resolvedNeeds','temperature'].find(v=>word(v)===word(key))||key,v])):{};}
+function canonicalObject(value){return object(value)?Object.fromEntries(Object.entries(value).map(([key,v])=>[aliases.key[word(key)]||[...Object.keys(VALUES),'changes','people','characters','context','state','actions','events','transition','review','needed','observed','category','op','name','color','brand','wearing','wearingKo','layer','scene','sceneKo','time','place','activity','reason','reasoning','confidence','noChange','status','result','data','conditions','needs','resolvedConditions','resolvedNeeds','temperature'].find(v=>word(v)===word(key))||key,v])):{};}
 export function normalizeSceneResponse(raw,{names={}}={}){
  const facts={changes:{}},adjustments=[],unresolved=[];
  const note=(path,input,output)=>{if(JSON.stringify(input)!==JSON.stringify(output))adjustments.push({path,input,output});};
@@ -130,8 +130,26 @@ export function normalizeSceneResponse(raw,{names={}}={}){
     next.actions.push(result);
    }
   }
+  if(change.review!=null){
+   const review=canonicalObject(change.review),needed=bool(review.needed);
+   if(needed!==undefined){next.review={needed};if(typeof review.reason==='string'&&!/[가-힣]/.test(review.reason))next.review.reason=short(review.reason,160);}
+   else unknown(who+'.review',change.review,'optional review unclear');
+  }
+  if(change.observed!=null){
+   const entries=Array.isArray(change.observed)?change.observed:object(change.observed)?[change.observed]:[];
+   if(!entries.length&&!Array.isArray(change.observed))unknown(who+'.observed',change.observed,'optional observation unclear');
+   for(const [index,entry] of entries.entries()){
+    const observation=canonicalObject(entry),path=who+'.observed.'+index,category=enumValue('category',observation.category,path+'.category');
+    if(!category||typeof observation.name!=='string'||!observation.name.trim()||/[가-힣]/.test(observation.name)){unknown(path,entry,'garment identity unclear');continue;}
+    const result={category,name:short(observation.name,160)};
+    for(const key of ['color','brand','wearing'])if(typeof observation[key]==='string'&&!/[가-힣]/.test(observation[key]))result[key]=short(observation[key],160);
+    if(typeof observation.wearingKo==='string'&&/[가-힣]/.test(observation.wearingKo)&&!/[A-Za-z]/.test(observation.wearingKo))result.wearingKo=short(observation.wearingKo,160);
+    const layer=bool(observation.layer);if(layer!==undefined)result.layer=layer;
+    (next.observed??=[]).push(result);
+   }
+  }
   if(change.items||change.outfit)unknown(who+'.items',change.items||change.outfit,'inventory needs interpretation');
-  if(Object.keys(next.context).length||next.actions.length||next.transition!==undefined)facts.changes[who]=next;
+  if(Object.keys(next.context).length||next.actions.length||next.transition!==undefined||next.review||next.observed?.length)facts.changes[who]=next;
  }
  for(const field of ['sceneKo','scene'])if(object(root[field])){const values=environmentValues(canonicalObject(root[field]));if(Object.keys(values).length)facts.environment={...facts.environment,...values};}
  for(const field of ['scene','sceneKo']){
@@ -157,7 +175,7 @@ export function mergeEnvironmentFacts(facts,evidence,baseline){
  if(locations.size<=1)for(const who of PEOPLE){
   const change=next.changes[who]||{context:{},actions:[]};
   for(const [key,value] of Object.entries(shared))if((change.context[key]===undefined||change.context[key]==='unknown'||change.context[key]===null)&&value!==baseline.people[who].context[key])change.context[key]=value;
-  if(Object.keys(change.context).length||change.actions.length||change.transition!==undefined)next.changes[who]=change;
+  if(Object.keys(change.context).length||change.actions.length||change.transition!==undefined||change.review||change.observed?.length)next.changes[who]=change;
  }
  const display=environmentValues({...baseline.people.character.context,...next.changes.character?.context,...shared});
  if(Object.keys(shared).length&&environmentText(display)){
@@ -188,6 +206,7 @@ const TOKEN_ALIASES={heels:'heel',heel:'heel',pumps:'pump',pump:'pump',boots:'bo
 function tokens(value){return short(value,200).toLowerCase()
  .replace(/\bgrey\b/g,'gray')
  .replace(/\bsweats\b|\bsweat[ -]+pants\b/g,'sweatpants')
+ .replace(/\b(?:sweatpants|joggers)\b/g,'sweatpants trousers')
  .replace(/\b(?:pants|slacks)\b/g,'trousers')
  .replace(/\b(?:sneaker|trainer)s?\b/g,'sneakers')
  .replace(/\b(?:underpants|underwear|panties)\b/g,'briefs')
@@ -225,12 +244,11 @@ function suitability(item,context){
  if(item.category==='신발'&&/flat shoe|low heel|no heel|balance/.test(needs)&&/high.heel|stiletto|하이힐|스틸레토/.test(description))return {reason:'balance',level:1,fit:['flat']};
  if(['상의','겉옷'].includes(item.category)&&/front.open|arm access/.test(needs)&&/pullover|turtleneck|풀오버|터틀넥/.test(description)&&!traits.fit.includes('front_opening'))return {reason:'arm_access',level:1,fit:['front_opening']};
  if(context.purpose==='formal'&&traits.use.includes('casual')&&!traits.use.includes('formal')&&['상의','하의','신발','겉옷'].includes(item.category))return {reason:'formal_use',level:2,use:['formal']};
- if(context.location==='home'&&context.phase==='resting'&&['상의','하의'].includes(item.category)&&traits.use.some(v=>['formal','work'].includes(v))&&!traits.use.some(v=>['home','casual'].includes(v)))return {reason:'home_use',level:2,use:['home','casual']};
  return null;
 }
 const unsuitable=(item,context)=>!!suitability(item,context);
 function matchKey(person,policy,exceptions,owned){
- const value=JSON.stringify([4,person.outfitStatus,person.context,policy,exceptions,person.nude,person.origins,person.items.map(({id,name,features,traits,wearing})=>[id,name,features,traits,wearing]),owned.map(({id,name,features,traits})=>[id,name,features,traits]).sort((a,b)=>a[0].localeCompare(b[0]))]);
+ const value=JSON.stringify([5,person.outfitStatus,person.context,policy,exceptions,person.nude,person.origins,person.items.map(({id,name,features,traits,wearing})=>[id,name,features,traits,wearing]),owned.map(({id,name,features,traits})=>[id,name,features,traits]).sort((a,b)=>a[0].localeCompare(b[0]))]);
  let h=2166136261;for(const c of value){h^=c.charCodeAt(0);h=Math.imul(h,16777619);}return (h>>>0).toString(36);
 }
 export function satisfiesRequest(item,request,context){
@@ -296,7 +314,12 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},opt
    else if(wearing===undefined&&current){if(current.wearing)next.wearing=current.wearing;if(current.wearingKo)next.wearingKo=current.wearingKo;}
    const index=person.items.findIndex(value=>value.id===item.id);if(index<0)person.items.push(next);else person.items[index]=next;person.nude=false;person.outfitStatus='known';delete person.outfitNote;
   };
-  for(const action of change.actions||[]){
+  const observations=(change.observed||[]).filter(observation=>{
+   const ended=(change.actions||[]).some(action=>action.op==='nude'||action.op==='remove'&&sameGarment(observation,action)||action.op==='wear'&&slot(action)===slot(observation));
+   if(ended)decision('observation_deferred',{category:observation.category,name:observation.name,reason:'explicit_action_priority'});
+   return !ended;
+  });
+  for(const action of [...observations.map(value=>({...value,op:'observe'})),...(change.actions||[])]){
    if(action.op==='nude'){for(const item of person.items)blocked.add(item.id);person.items=[];person.nude=true;person.outfitStatus='known';blocked.add('all');decision('explicit_undress');continue;}
    const worn=person.items.filter(item=>sameGarment(item,action));
    if(action.op==='remove'){
@@ -308,10 +331,17 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},opt
     // Never guess which of several garments was adjusted.
     if(worn.length===1){worn[0].wearing=action.wearing;if(action.wearingKo)worn[0].wearingKo=action.wearingKo;else delete worn[0].wearingKo;protectedIds.add(worn[0].id);person.origins[worn[0].id]='explicit';decision('adjusted',{id:worn[0].id,reason:'explicit'});}continue;
    }
+   const observed=action.op==='observe';
+   if(observed&&!action.layer&&action.category!=='소품'&&person.items.filter(item=>slot(item)===slot(action)).length>1&&!person.items.some(item=>sameGarment(item,action))){decision('observation_deferred',{category:action.category,name:action.name,reason:'ambiguous_layer'});continue;}
+   const replaced=observed&&!action.layer&&action.category!=='소품'?person.items.filter(item=>slot(item)===slot(action)&&!sameGarment(item,action)).map(item=>item.id):[];
    const generatedLink=options.generatedMatches?.find(value=>requestKey(value.request)===requestKey({who,category:action.category,reason:'explicit',name:action.name,color:action.color||'',brand:action.brand||''}));
    const matched=(generatedLink&&owned.find(item=>item.id===generatedLink.id))||person.items.find(item=>sameGarment(item,action))||owned.find(item=>sameGarment(item,action)&&item.name.toLowerCase()===action.name.toLowerCase())||owned.find(item=>sameGarment(item,action));
-   if(matched){wear(matched,action);protectedIds.add(matched.id);person.origins[matched.id]='explicit';decision('explicit_wear',{id:matched.id});}
-   else need(action.category,'explicit',{name:action.name,color:action.color||'',brand:action.brand||'',wearing:action.wearing||'',wearingKo:action.wearingKo||'',layer:!!action.layer});
+   if(matched){
+    wear(matched,{...action,layer:action.layer??(observed&&(action.category==='소품'||person.items.some(item=>item.id===matched.id)))});protectedIds.add(matched.id);person.origins[matched.id]='explicit';
+    const superseded=replaced.filter(id=>!person.items.some(item=>item.id===id));
+    decision(observed?'observed_worn':'explicit_wear',{id:matched.id,...(superseded.length?{superseded}:{})});
+   }
+   else{if(observed)decision('observation_missing',{category:action.category,name:action.name});need(action.category,'explicit',{name:action.name,color:action.color||'',brand:action.brand||'',wearing:action.wearing||'',wearingKo:action.wearingKo||'',layer:action.layer??(observed&&action.category==='소품')});}
   }
   const relevant=Object.keys(change.context||{}).some(key=>JSON.stringify(before[key])!==JSON.stringify(context[key]));
   const publicPlace=context.space==='public'||['outside','work','school'].includes(context.location);
@@ -324,7 +354,8 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},opt
   if(change.automatic===false||context.exception==='keep'||context.exception==='undressed'||blocked.has('all')||privatePhase){decision('kept',{reason:privatePhase?'private_phase':'explicit_exception',outfitStatus:person.outfitStatus});continue;}
   if(bootstrap)decision('bootstrap',{reason:'unknown_outfit',location:context.location,phase:context.phase});
   const assessment=matchKey(person,policy,exceptions,owned);
-  if(!relevant&&!change.transition&&!sceneTransition&&person.matchKey===assessment){decision('kept',{reason:'already_checked'});continue;}
+  if(change.review)decision('review',{needed:change.review.needed,reason:change.review.reason||'',observations:observations.length,actions:change.actions?.length||0,contextChanged:relevant});
+  if(!relevant&&!change.transition&&!sceneTransition&&change.review?.needed!==true&&person.matchKey===assessment){decision('kept',{reason:'already_checked'});continue;}
   // Change existing pieces only when a newly established requirement makes them unsuitable.
   for(const current of [...person.items]){
    if(current.category==='겉옷'&&itemTraits(current).fit.includes('front_opening')&&/waist|abdom|belly/.test(clothingNeeds(context))&&/\b(?:buttoned|fastened|zipped)\b/.test(current.wearing||'')&&!protectedIds.has(current.id)&&!['explicit','manual'].includes(person.origins[current.id])){
@@ -384,5 +415,5 @@ export function resolveOutfit(baseline,facts,wardrobes,memory={},policies={},opt
 
 export function sceneRequest(baseline,messages,contextMessages=[],names={}){
  const compact=context=>Object.fromEntries(Object.entries(normalizeContext(context)).filter(([,value])=>value!==null&&value!==''&&value!=='unknown'&&(!Array.isArray(value)||value.length)));
- return {people:Object.fromEntries(PEOPLE.map(who=>[who,{...(names[who]?{name:names[who]}:{}),context:compact(baseline.people[who].context),worn:baseline.people[who].items.map(({name,color,brand})=>({name,color,brand})),nude:baseline.people[who].nude}])),contextMessages,messages};
+ return {people:Object.fromEntries(PEOPLE.map(who=>[who,{...(names[who]?{name:names[who]}:{}),context:compact(baseline.people[who].context),worn:baseline.people[who].items.map(({id,name,color,brand})=>({name,color,brand,...(baseline.people[who].origins?.[id]?{origin:baseline.people[who].origins[id]}:{})})),nude:baseline.people[who].nude}])),contextMessages,messages};
 }

@@ -371,6 +371,13 @@ await page.evaluate(()=>window.sceneReplies=[JSON.stringify({Changes:{CHAR:{Cont
 await readNow();await saved();assert.equal(await page.evaluate(()=>calls.length),flexibleCalls+1);
 await page.evaluate(()=>window.sceneReplies=['The character is now at home, resting.','{"changes":{"character":{"context":{"location":"home","space":"private","phase":"resting"}}},"sceneKo":{"place":"집"}}']);
 await readNow();await saved();assert.equal(await page.evaluate(()=>calls.length),flexibleCalls+3);
+// A current-wear observation uses the existing generation/save/UI path, then remains stable.
+await page.evaluate(()=>window.sceneReplies=[JSON.stringify({changes:{character:{review:{needed:false,reason:'Current garment is explicit.'},observed:[{category:'bottom',name:'cargo trousers'}]}}})]);
+await readNow();await saved();
+const observedState=structuredClone(stored().data.characters['c.png'].branches[bid].current);assert.ok(observedState.people.character.items.some(item=>item.name==='cargo trousers'));
+assert.doesNotMatch(await page.locator('.kc-main').innerText(),/Current garment is explicit|observed|review/);
+const afterObservation=await page.evaluate(()=>calls.length);
+await page.evaluate(()=>window.sceneReplies=[JSON.stringify({changes:{character:{review:{needed:false}}}})]);await readNow();await saved();assert.equal(await page.evaluate(()=>calls.length),afterObservation+1);assert.deepEqual(stored().data.characters['c.png'].branches[bid].current,observedState);
 await page.evaluate(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>window.copiedDiagnostic=value}});});
 await page.locator('[data-action="settings"]').click();await page.locator('[data-action="logs-copy"]').click();
 assert.ok(JSON.parse(await page.evaluate(()=>window.copiedDiagnostic)).records.length);assert.match(await page.locator('.kc-log-copy-status').last().innerText(),/복사했습니다/);

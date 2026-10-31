@@ -160,3 +160,9 @@ test('닫힘 보완은 문자열 속 괄호와 배열을 구분하고 한도 초
   const result=await createHost(()=>({}),service,{}).request('p',SCENE,{},new AbortController().signal,'scene');assert.equal(result.outcome!=='unusable',accepted,raw);assert.equal(calls,accepted?1:2);
  }
 });
+
+test('장면 복구도 관찰·검토 계약을 보존하고 사실이나 환복 행동을 만들지 않는다',async()=>{
+ const sent=[],service={getProfile:()=>({}),validateProfile(){},async sendRequest(_id,messages){sent.push(messages);return {content:sent.length===1?'Current garment extraction follows, but is malformed.':JSON.stringify({changes:{character:{review:{needed:'yes',reason:'Saved estimate conflicts with current clothes.'},observed:[{category:'bottom',name:'cargo trousers'}]}}})};}};
+ const result=await createHost(()=>({}),service,{}).request('p',SCENE,{},new AbortController().signal,'scene');assert.equal(sent.length,2);assert.match(sent[1][0].content,/Preserve optional review/);assert.match(sent[1][0].content,/without op/);assert.equal(result.facts.changes.character.observed[0].category,'하의');assert.equal(result.facts.changes.character.review.needed,true);assert.deepEqual(result.facts.changes.character.actions,[]);
+ assert.match(SCENE,/Returning home does not establish a change into homewear/);assert.match(SCENE,/origin/);assert.match(SCENE,/Omitted items are not removed/);
+});

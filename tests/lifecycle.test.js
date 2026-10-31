@@ -10,7 +10,9 @@ const info=time=>`<Scene_Info><small>Time: ${time} | Date: 2026.10.07\nLoc: Livi
 test('같은 장소의 일반 대화와 분 단위 인포 변화는 판독하지 않음',()=>{
  const messages=[m(0,'집에서 대화한다.'+info('14:00')),m(1,'그는 미소 지으며 질문에 답했다.'+info('14:03'))];
  assert.equal(needsOutfitRead(messages,1),false);assert.equal(needsOutfitRead(messages,0),true);
- assert.equal(needsOutfitRead([m(0,'At the party.'),m(1,'Her blue dress caught the light as she smiled.')],1),false);
+ assert.equal(needsOutfitRead([m(0,'At the party.'),m(1,'Her blue dress caught the light as she smiled.')],1),true);
+ assert.equal(needsOutfitRead([m(0,'Her blue dress caught the light.'),m(1,'Her blue dress caught the light as she smiled.')],1),false);
+ assert.equal(needsOutfitRead([m(0,'He is at home.'),m(1,'His thumb rested in his cargo pocket.')],1),true);
 });
 test('같은 장소의 환복·출발·장소·큰 시간 변화는 판독',()=>{
  for(const change of ['그는 셔츠를 벗었다.','외출 준비를 마치고 현관으로 나섰다.','He took off his shoes.','다음 날 아침이 되었다.',info('16:00'),info('14:03').replace('Living room','Office')])assert.equal(needsOutfitRead([m(0,info('14:00')),m(1,change)],1),true,change);

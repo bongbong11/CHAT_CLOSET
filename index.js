@@ -208,11 +208,12 @@ const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>mess
  translateProfile,
  async intervene(requests){
   if(!settings().enabled)throw Error('설정에서 사용함을 켜세요.');
-  const expected=host.identity();await storage.pull();
-  const v=current();if(!v||!sameIdentity(expected)||v.b.suspended||v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('현재 채팅의 착장 브랜치를 확인하세요.');
+  const expected=current(),requestedKey=prefixKeys(host.messages()).at(-1);await storage.pull();
+  const v=current();if(!expected||!v||!sameIdentity(expected.i)||v.bid!==expected.bid||v.b.suspended||v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('현재 채팅의 착장 브랜치를 확인하세요.');
   if(generating||analysisController)throw Error('진행 중인 작업이 끝난 뒤 다시 시도하세요.');
   const messages=host.messages(),key=prefixKeys(messages).at(-1);
   if(!key)throw Error('현재 채팅에 먼저 답변이 필요해요.');
+  if(key!==requestedKey)throw Error('채팅이 바뀌었어요. 착장을 확인하고 다시 적용하세요.');
   const controller=startTask('참견한 착장 적용');
   try{
    const result=await engine.read(v.i.id,v.bid,messages,{recordLimit:1,force:true,system:INTERVENTION,intervention:requests,chatId:v.i.chat,profileId:settings().profileId,trace:controller.trace,isCurrent:()=>!controller.signal.aborted&&sameIdentity(v.i)&&current()?.b===v.b&&prefixKeys(host.messages()).at(-1)===key});

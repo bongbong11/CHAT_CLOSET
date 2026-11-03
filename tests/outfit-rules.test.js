@@ -12,7 +12,7 @@ test('확정 착장은 과거 답변 체크포인트와 무관하게 채팅별�
 
 test('활동 요구는 필요한 슬롯만 추가하고 완료 상태는 다음 판독에서 만료된다',()=>{
  const baseline=emptyState();
- const raw={changes:{character:{context:{location:'home',phase:'resting',activity:{name:'exercise',stage:'completed',requirements:[{category:'footwear',fit:['flat']}]}}}}};
+ const raw={changes:{character:{context:{location:'home',phase:'resting',activity:{name:'exercise',stage:'completed',requirements:[{category:'footwear',traits:{fit:['flat']}}]}}}}};
  const facts=normalizeSceneResponse(raw).facts;
  assert.deepEqual(facts.changes.character.context.activity.requirements,[{category:'신발',fit:['flat']}]);
  const result=resolveOutfit(baseline,facts,{character:[],persona:[]});
@@ -36,6 +36,68 @@ const owned={character:[shirt,pants,shoes,briefs],persona:[]};
 const facts=context=>validateSceneFacts({changes:{character:{context}}});
 const ids=state=>state.people.character.items.map(item=>item.id);
 const home=()=>{const state=emptyState();state.people.character.context=normalizeContext({location:'home',space:'private',phase:'resting'});state.people.character.items=[shirt,pants,briefs];return state;};
+
+test('참견은 선택 인물과 지정 품목만 변경하고 맞는 옷을 재사용한다',async()=>{
+ for(const targets of [['character'],['persona'],['character','persona']]){
+  const storage=memory(),store=new Store(storage,{compactConfirmed:true});
+  store.createCharacter('c','C');const bid=store.createBranch('c','B'),branch=store.branch('c',bid);
+  store.bind('c',bid,'chat');branch.base=home();branch.base.people.persona=structuredClone(branch.base.people.character);
+  const baseline=structuredClone(branch.base),blue={...shirt,id:'blue',color:'blue'},red={...shirt,id:'red',color:'red'};
+  branch.extra={character:[blue],persona:[red]};
+  const engine=new Engine(store,async()=>({changes:{
+   character:{context:{location:'hospital'},actions:[{op:'adjust',category:'top',name:'Oxford shirt',color:'blue'}]},
+   persona:{actions:[{op:'wear',category:'top',name:'Oxford shirt',color:'red'}]},
+  }}),async()=>assert.fail('owned items should be reused'));
+  const result=await engine.read('c',bid,[message(1)],{chatId:'chat',force:true,intervention:Object.fromEntries(targets.map(who=>[who,'change only the shirt']))});
+  for(const [who,replacement] of [['character',blue],['persona',red]]){
+   const actor=result.people[who];
+   assert.deepEqual(actor.context,baseline.people[who].context);
+   assert.deepEqual(actor.items.filter(item=>item.category!=='상의').map(item=>item.id),['bottom','briefs']);
+   assert.equal(actor.items.find(item=>item.category==='상의').id,targets.includes(who)?replacement.id:'top');
+  }
+  assert.doesNotMatch(storage.getItem(KEY),/change only the shirt/);
+  assert.deepEqual(new Store(storage).branch('c',bid).currentByChat.chat.state,result);
+ }
+});
+
+test('생성 결과가 누락되거나 명시한 참견 색상·활동 요건과 다르면 착장과 옷장 모두 보존한다',async()=>{
+ for(const scenario of ['wrongColor','wrongActivity','omitted','wrongId','extraPerson','validActivity']){
+  const storage=memory(),store=new Store(storage,{compactConfirmed:true});store.createCharacter('c','C');
+  const bid=store.createBranch('c','B'),branch=store.branch('c',bid);store.bind('c',bid,'chat');branch.base=home();
+  const activity=['wrongActivity','validActivity'].includes(scenario);
+  const scene=activity?{context:{activity:{name:'exercise',stage:'ongoing',requirements:[{category:'footwear',fit:['flat'],climate:['rain']}]}}}:{actions:[{op:'wear',category:'top',name:'Oxford shirt',color:'blue'}]};
+  const engine=new Engine(store,async()=>({changes:{character:scene}}),async({missing})=>{
+   assert.equal(missing.length,1);
+   const [{requestId,category}]=missing;
+   const item={requestId:scenario==='wrongId'?'unknown':requestId,category,name:activity?'running shoes':'Oxford shirt',color:scenario==='wrongColor'?'red':'blue',brand:'UNIQLO',labelKo:'파란 의류',brandKo:'유니클로',traits:{fit:['flat'],climate:scenario==='validActivity'?['rain']:[]}};
+   return {newItems:scenario==='extraPerson'?{character:[item],extra:[item]}:{character:scenario==='omitted'?[]:[item]}};
+  });
+  const options={chatId:'chat',force:true,...(!activity?{intervention:{character:'blue Oxford shirt only'}}:{})},before=storage.getItem(KEY);
+  if(scenario==='validActivity'){
+   const result=await engine.read('c',bid,[message(1)],options);
+   const applied=result.people.character.items.find(item=>item.category==='신발');
+   assert.equal(applied.name,'running shoes');
+   assert.ok(new Store(storage).branch('c',bid).extra.character.some(item=>item.id===applied.id));
+  }else{
+   await assert.rejects(engine.read('c',bid,[message(1)],options),/기존 착장은 유지됩니다/);
+   assert.equal(storage.getItem(KEY),before);
+   assert.deepEqual(branch.extra.character,[]);
+  }
+ }
+});
+
+test('참견 생성 중 채팅을 전환하면 늦게 도착한 결과를 저장하지 않는다',async()=>{
+ const storage=memory(),store=new Store(storage,{compactConfirmed:true});store.createCharacter('c','C');
+ const bid=store.createBranch('c','B'),branch=store.branch('c',bid);store.bind('c',bid,'chat');branch.base=home();
+ let release,active=true;
+ const engine=new Engine(store,async()=>({changes:{character:{actions:[{op:'wear',category:'top',name:'Oxford shirt',color:'blue'}]}}}),({missing})=>new Promise(resolve=>{
+  release=()=>resolve({newItems:{character:[{...shirt,requestId:missing[0].requestId,color:'blue',labelKo:'파란 셔츠',brandKo:'유니클로'}]}});
+ }));
+ const before=storage.getItem(KEY);
+ const pending=engine.read('c',bid,[message(1)],{chatId:'chat',force:true,intervention:{character:'blue shirt'},isCurrent:()=>active});
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(typeof release,'function');active=false;release();
+ assert.equal(await pending,null);assert.equal(storage.getItem(KEY),before);assert.deepEqual(branch.extra.character,[]);
+});
 
 test('장면 검토와 현재 착용 관찰은 선택 필드이며 일부 오류가 기존 사실을 차단하지 않는다',()=>{
  const parsed=normalizeSceneResponse({changes:{character:{review:{needed:'yes',reason:'Current trousers differ.'},observed:{category:'bottom',name:'cargo trousers'}}}});

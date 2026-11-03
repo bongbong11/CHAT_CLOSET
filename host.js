@@ -141,7 +141,7 @@ export function createHost(context,service,worldInfo,diagnostics={}){
      }
      let parsed;try{parsed=parseJSON(raw,{array:task==='scene'});}catch(error){if(task!=='scene')throw error;parsed=raw;}
      if(task==='scene'){
-      normalized=normalizeSceneResponse(fromModelData(parsed),{names:Object.fromEntries(Object.entries(data.people||{}).map(([who,value])=>[who,value.name]))});
+      normalized=normalizeSceneResponse(fromModelData(parsed),{intervention:!!data.targets,names:Object.fromEntries(Object.entries(data.people||{}).map(([who,value])=>[who,value.name]))});
       trace?.event('normalize','장면 내용 해석',normalized,normalized.outcome==='unusable'?'warn':'info');
       if(normalized.outcome!=='unusable'||attempt===1){
        const result={...normalized,sceneResult:true};

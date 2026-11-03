@@ -25,12 +25,13 @@ function activityFact(value){
   if(!CATEGORIES.includes(category))continue;
   const slot=category==='속옷'&&['bra','briefs','socks','undershirt'].includes(entry.slot)?entry.slot:undefined;
   if(category==='속옷'&&!slot)continue;
+  const fields={...entry.traits,...entry};
   const constraints={};
   for(const [key,allowed] of Object.entries({use:['casual','work','formal','home','care'],fit:['loose','adjustable','maternity','front_opening','flat','easy_on'],climate:['hot','mild','cold','rain']})){
-   const values=Array.isArray(entry[key])?[...new Set(entry[key].filter(v=>allowed.includes(v)))]:[];
+   const values=Array.isArray(fields[key])?[...new Set(fields[key].filter(v=>allowed.includes(v)))]:[];
    if(values.length)constraints[key]=values;
   }
-  if(['upper','lower','full','feet','support'].includes(entry.coverage))constraints.coverage=entry.coverage;
+  if(['upper','lower','full','feet','support'].includes(fields.coverage))constraints.coverage=fields.coverage;
   if(Object.keys(constraints).length)requirements.push({category,...(slot?{slot}:{}),...constraints});
  }
  return {name,stage:value.stage,...(requirements.length?{requirements}:{})};
@@ -70,7 +71,7 @@ const aliases={
 };
 const bool=value=>typeof value==='boolean'?value:['true','yes','1'].includes(word(String(value)))?true:['false','no','0'].includes(word(String(value)))?false:undefined;
 function canonicalObject(value){return object(value)?Object.fromEntries(Object.entries(value).map(([key,v])=>[aliases.key[word(key)]||[...Object.keys(VALUES),'changes','people','characters','context','state','actions','events','transition','review','needed','observed','category','op','name','color','brand','wearing','wearingKo','layer','scene','sceneKo','time','place','activity','reason','reasoning','confidence','noChange','status','result','data','conditions','needs','resolvedConditions','resolvedNeeds','temperature'].find(v=>word(v)===word(key))||key,v])):{};}
-export function normalizeSceneResponse(raw,{names={}}={}){
+export function normalizeSceneResponse(raw,{names={},intervention=false}={}){
  const facts={changes:{}},adjustments=[],unresolved=[];
  const note=(path,input,output)=>{if(JSON.stringify(input)!==JSON.stringify(output))adjustments.push({path,input,output});};
  const unknown=(path,value,reason='meaning unclear')=>unresolved.push({path,value,reason});
@@ -144,7 +145,11 @@ export function normalizeSceneResponse(raw,{names={}}={}){
    const list=Array.isArray(source)?source:object(source)?[source]:[];
    if(!list.length&&!Array.isArray(source)){unknown(who+'.actions',source);next.automatic=false;}
    for(const [index,entry] of list.entries()){
-    const path=who+'.actions.'+index,action=canonicalObject(entry),op=enumValue('op',action.op,path+'.op');
+    const path=who+'.actions.'+index,action=canonicalObject(entry);
+    let op=enumValue('op',action.op,path+'.op');
+    if(intervention&&op==='adjust'&&action.wearing===undefined&&short(action.name)&&(short(action.color)||short(action.brand))){
+     note(path+'.op','adjust','wear');op='wear';action.layer=false;
+    }
     if(!op){unknown(path,entry);next.automatic=false;continue;}
     if(op==='nude'){next.actions.push({op});continue;}
     const category=enumValue('category',action.category,path+'.category');

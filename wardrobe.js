@@ -84,6 +84,7 @@ export function applyLabels(branch,who,completed){
  for(const cp of Object.values(branch.checkpoints||{})){update(cp.extra?.[who]);update(cp.state?.people[who]?.items);for(const state of cp.history||[])update(state?.people[who]?.items);}
  for(const snapshot of Object.values(branch.display?.snapshots||{}))update(snapshot.people?.[who]?.items);
  for(const head of Object.values(branch.display?.heads||{}))update(head.state?.people?.[who]?.items);
+ for(const confirmed of Object.values(branch.currentByChat||{}))update(confirmed.state?.people?.[who]?.items);
 }
 const signature=item=>JSON.stringify([item.category,item.name?.trim().toLowerCase(),item.color?.trim().toLowerCase(),[...(item.features||[])].map(s=>s.trim().toLowerCase()).sort(),item.brand?.trim().toLowerCase()]);
 export function mergeWardrobe(existing,added){

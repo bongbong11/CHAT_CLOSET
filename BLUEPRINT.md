@@ -1125,6 +1125,10 @@ SCENE 영어 문안은 INPUT → READ ORDER → OUTPUT → FIELD RULES로 구성
 
 ### 24.8 최종 검수와 배포 판단
 
+1.6.14에서는 방별 최신 확정 착장을 currentByChat에 저장한다. 장면 판독, 수동 착장 저장, 옷장 재생성에서 새 과거 체크포인트 기록을 중단했다. 구 자료는 방별 근거가 확인되는 경우 이전하며, 모두 이전된 브랜치는 저장 시 구 체크포인트와 이력을 비운다. 아직 방을 식별할 수 없는 기록은 보존한다. 새로고침과 화면 복원은 서버에 자동으로 쓰지 않는다.
+
+실제 Gemini 2.5 Flash 및 DeepSeek V4.1 Flash에 합성 장면을 보내 두 인물의 착용·제거가 각각 파싱되고 적용되는지 검증했다.
+
 2026-11-04 배포 범위 (1.6.13). 현재 구현은 display.heads[chatId].state에 독립적인 최신 확정 상태를 보관한다. 기존 체크포인트와 구 자료 읽기 코드는 호환을 위해 남아 있다. currentByChat 전환과 구 형식의 완전한 제거는 미완료다. 실제 SCENE 계약은 changes/context/actions/observed를 유지하며 context.activity에 name, stage, 선택적 품목 requirements를 추가했다. 별도 persistent 요구 컨테이너 대신 기존 conditions/needs와 해소 목록을 유지한다. 참견은 선택 대상의 일회성 actions를 기존 매칭·생성 경로로 처리한다. 참견 원문은 상태와 주입문에 보관하지 않는다. 최신 답변 카드 한 개와 공통 outfitPrompt를 연결했다.
 
 검증 결과. 자동 검사 190개, JavaScript 문법 검사, 모의 서버·모델을 사용한 Edge PC/모바일 회귀 검사가 통과했다. 외부 DeepSeek/Gemini 실응답 검증은 미실시다. 이번 사용자 승인에 따라 위 구현 범위를 배포한다.

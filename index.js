@@ -1,7 +1,7 @@
 import {getContext} from '../../../extensions.js';
 import {ConnectionManagerRequestService} from '../../shared.js';
 import * as worldInfo from '../../../world-info.js';
-import {Store,Engine,DiagnosticLog,normalizeProfile,clone,prefixKeys,outfitPrompt,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,saveCheckpoint,memoryFromStates,hash,compactStoredData,reconcileDisplay,trustedTimeline} from './core.js';
+import {Store,Engine,DiagnosticLog,normalizeProfile,clone,prefixKeys,outfitPrompt,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,memoryFromStates,hash,compactStoredData,reconcileDisplay,trustedTimeline} from './core.js';
 import {ANALYSIS,SCENE,INTERVENTION,OUTFIT_ITEMS,WARDROBE_FILL,WARDROBE_REBUILD,WARDROBE_LABELS} from './prompts.js';
 import {createHost,injectPayload,registerOutfitMacro} from './host.js';
 import {createUI} from './ui.js';
@@ -18,7 +18,7 @@ const host=createHost(getContext,ConnectionManagerRequestService,worldInfo,{logs
 const outputGuard=installOutputGuard(getContext);
 let legacyStorage;try{legacyStorage=localStorage;}catch{}
 const storage=await new ServerStorage({headers:()=>getContext().getRequestHeaders(),legacy:legacyStorage,logs}).init();
-const store=new Store(storage);
+const store=new Store(storage,{compactConfirmed:true});
 const settings=()=>store.data.settings;
 const engine=new Engine(store,(system,data,signal,profileId,trace)=>host.request(profileId,system,data,signal,'scene',trace),(data,signal,profileId,trace)=>host.request(profileId,OUTFIT_ITEMS,data,signal,'items',trace));
 let manualRead=null;
@@ -32,7 +32,7 @@ function startTask(label,{notify=true}={}){
 function finishTask(controller){if(analysisController!==controller)return;controller.trace?.finish('completed','작업·서버 저장 완료');analysisController=null;backgroundTask='';ui.toast(false);ui.refresh();if(deferredRead)schedule();}
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
 const sameIdentity=expected=>{const actual=host.identity();return !!expected&&actual?.id===expected.id&&actual.chat===expected.chat&&actual.personaKey===expected.personaKey;};
-const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcile&&reconcileDisplay(v.b,v.i.chat,messages,1);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
+const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();if(reconcile)reconcileDisplay(v.b,v.i.chat,messages,1);restoreBranchForMessages(v.b,messages,v.i.chat);};
 const state=()=>{const v=current(),timeline=v&&trustedTimeline(v.b,host.messages(),v.i.chat);return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!timeline,outfitDetached:!!timeline?.detached,settings:settings(),injectionError,pending:pending||!!manualRead,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
  const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,newItems:settings().newItems,profileId:settings().profileId});
@@ -149,8 +149,7 @@ async function refillWardrobe(who,categoryId='all'){
   v.b.outfitMemory??=memoryFromStates([v.b.base,...v.b.history,v.b.current]);
   for(const category of categories)replaceWardrobeCategory(v.b,who,category.category,result.wardrobe.filter(i=>i.category===category.category),result.wardrobeExceptions[category.id]);
   // Rebase only at the last processed turn; RP written during generation still needs reading.
-  v.b.keys=processedKeys;const last=v.b.keys.at(-1);
-  if(last)saveCheckpoint(v.b,last,{state:clone(v.b.current),extra:clone(v.b.extra),history:[],outfits:[],outfitMemory:clone(v.b.outfitMemory)});
+  v.b.keys=processedKeys;
   store.save();await storage.flush();ui.refresh();return true;
  }catch(error){controller.trace?.fail(error,'apply');throw error;}finally{finishTask(controller);}
 }
@@ -225,7 +224,7 @@ const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>mess
  updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked','profileId','displayMode','brands'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},
  saveProfiles(profiles){cancel();const v=current();if(!v)return;v.b.profiles=profiles;for(const who of ['character','persona'])if(v.b.reportTranslations?.[who]?.signature!==hash(JSON.stringify(profiles[who]?.fields)))delete v.b.reportTranslations?.[who];store.save();ui.refresh();},
  promote(){const v=current();if(!v)return;store.character(v.i.id).profiles=clone(v.b.profiles);store.character(v.i.id).personaKey=v.b.personaKey;store.save();},
- saveOutfit(people){cancel();const v=current();if(!v)return;saveManualOutfit(v.b,people,host.messages(),v.i.chat,1);store.save();ui.refresh();},
+ saveOutfit(people){cancel();const v=current();if(!v)return;saveManualOutfit(v.b,people,host.messages(),v.i.chat,1,{compactConfirmed:true});store.save();ui.refresh();},
  async testConnection(profileId=settings().profileId){return host.request(profileId,'Return only {"ok":true}.',{},new AbortController().signal,'test').then(x=>{if(x.ok!==true)throw Error('연결 확인 응답이 잘못되었습니다.');});},
  remove(kind,bid){cancel();const i=host.identity();if(kind==='all'){store.deleteAll();outputGuard.remove();}else if(i){if(kind==='chat')store.resetChat(i.id,i.chat);if(kind==='branch')store.deleteBranch(i.id,bid||current()?.bid);if(kind==='character')store.deleteCharacter(i.id);}ui.refresh();},
 });
@@ -281,7 +280,7 @@ if(eventTypes.GENERATION_ENDED)eventSource.on(eventTypes.GENERATION_ENDED,()=>{g
 if(eventTypes.GENERATION_STOPPED)eventSource.on(eventTypes.GENERATION_STOPPED,()=>{generationStopped=true;generating=false;stopReader();deferredRead=false;deferredForce=false;changedChat();});
 if(eventTypes.CHAT_CHANGED)eventSource.on(eventTypes.CHAT_CHANGED,()=>{generationStopped=false;generating=false;cancel();restoreActive();ui.refresh();});
 if(eventTypes.CHAT_DELETED)eventSource.on(eventTypes.CHAT_DELETED,name=>{cancel();const i=host.identity();if(i)store.deleteChat(i.id,String(name).replace(/\.jsonl$/,''));ui.refresh();});
-if(eventTypes.CHAT_RENAMED)eventSource.on(eventTypes.CHAT_RENAMED,data=>{cancel();const id=String(data.avatarId||host.identity()?.id||'');const c=store.character(id);if(c){const old=String(data.oldFileName||'').replace(/\.jsonl$/,'');const fresh=String(data.newFileName||'').replace(/\.jsonl$/,'');for(const b of Object.values(c.branches)){b.links=b.links.map(x=>x===old?fresh:x);if(b.display?.heads?.[old]){b.display.heads[fresh]=b.display.heads[old];delete b.display.heads[old];}if(b.display?.chats?.[old]){b.display.chats[fresh]=b.display.chats[old];delete b.display.chats[old];}}store.save();}ui.refresh();});
+if(eventTypes.CHAT_RENAMED)eventSource.on(eventTypes.CHAT_RENAMED,data=>{cancel();const id=String(data.avatarId||host.identity()?.id||'');const c=store.character(id);if(c){const old=String(data.oldFileName||'').replace(/\.jsonl$/,'');const fresh=String(data.newFileName||'').replace(/\.jsonl$/,'');for(const b of Object.values(c.branches)){b.links=b.links.map(x=>x===old?fresh:x);if(Object.hasOwn(b.currentByChat||{},old)){b.currentByChat[fresh]=b.currentByChat[old];delete b.currentByChat[old];}if(b.display?.heads?.[old]){b.display.heads[fresh]=b.display.heads[old];delete b.display.heads[old];}if(b.display?.chats?.[old]){b.display.chats[fresh]=b.display.chats[old];delete b.display.chats[old];}}store.save();}ui.refresh();});
 // Remote updates can be ahead of the local ST chat. Viewing them must not prune or rewrite the remote timeline.
 storage.onChange=()=>{cancel();store.invalidate();store.data=store.load();restoreActive(false);if(settings().enabled)outputGuard.install?.();else outputGuard.remove();ui.remoteRefresh();};
 storage.onStatus=()=>ui.storageStatus();
@@ -296,7 +295,6 @@ window.addEventListener('beforeunload',event=>{if(storage.job||storage.pending!=
 const chatElement=document.querySelector('#chat');
 if(chatElement)new MutationObserver(changes=>{if(changes.some(c=>c.type==='attributes'))changedChat();}).observe(chatElement,{subtree:true,attributes:true,attributeFilter:['is_system','is_hidden']});
 restoreActive();
-if(storage.ready&&!storage.error&&storage.getItem()&&storage.getItem()!==JSON.stringify(store.data))store.save();
 ui.mount();
 messageView.mount();
 if(storage.error)ui.error(storage.error.message);

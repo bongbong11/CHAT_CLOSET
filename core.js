@@ -7,7 +7,7 @@ export const CATEGORIES = ['상의','하의','속옷','신발','겉옷','소품'
 export const PROFILE_FIELDS = ['나이대','직업','생활수준','생활환경','세계관','복식 규칙','배경·복식 문화','브랜드 성향','선택 성향','패션 관심도','스타일','색상','핏·소재','신발·소품','관리 습관','고정 조건'];
 export const DEFAULTS = {enabled:false,profileId:'',fixed:false,wardrobeLevel:'medium',newItems:'medium',brands:true,mascot:true,mascotLocked:false,displayMode:'floating',auto:true,chatTurns:8,displayLimit:1};
 export const clone = x => structuredClone(x);
-export const EXTENSION_VERSION='1.6.13';
+export const EXTENSION_VERSION='1.6.14';
 const redactString=value=>value.replace(/\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|authorization|password)\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');
 function diagnosticValue(value,seen=new WeakSet()){
  if(typeof value==='string')return redactString(value);
@@ -120,7 +120,7 @@ export function savedDisplay(branch,chatId,message,prefix){
  const record=branch?.display?.chats?.[chatId]?.[displayKey(message)];
  return record?.prefix===prefix&&branch.display.snapshots[record.snapshot]?{record,state:branch.display.snapshots[record.snapshot]}:null;
 }
-export function removeDisplayChat(branch,chatId){if(branch?.display?.chats){delete branch.display.chats[chatId];if(branch.display.heads)delete branch.display.heads[chatId];pruneDisplaySnapshots(branch);}}
+export function removeDisplayChat(branch,chatId){if(branch?.currentByChat)delete branch.currentByChat[chatId];if(branch?.display?.chats){delete branch.display.chats[chatId];if(branch.display.heads)delete branch.display.heads[chatId];pruneDisplaySnapshots(branch);}}
 export function trimDisplay(branch,limit=1){
  let count=0;
  for(const records of Object.values(branch.display?.chats||{})){
@@ -155,6 +155,11 @@ export function saveCheckpoint(branch,key,checkpoint){
 export function trustedTimeline(branch,messages,chatId){
  if(!branch)return null;
  const keys=prefixKeys(messages),head=branch.display?.heads?.[chatId];
+ const confirmed=Object.hasOwn(branch.currentByChat||{},chatId)?branch.currentByChat[chatId]:null;
+ if(confirmed){
+  const key=confirmed.inputKey,index=keys.indexOf(key);
+  return {state:confirmed.state,checkpoint:{...branch.checkpoints?.[key],state:confirmed.state,outfitMemory:confirmed.outfitMemory||branch.checkpoints?.[key]?.outfitMemory},index,key,detached:index<0&&key!=='root'};
+ }
  const fromKey=key=>{const index=keys.indexOf(key),checkpoint=branch.checkpoints?.[key];return index>=0&&checkpoint?{state:checkpoint.state,checkpoint,index,key}:null;};
  const retained=key=>{const checkpoint=branch.checkpoints?.[key];return checkpoint?{state:checkpoint.state,checkpoint,index:-1,key,detached:true}:null;};
  if(head){
@@ -179,7 +184,7 @@ export function reconcileDisplay(branch,chatId,messages,limit=1){
  branch.display??={chats:{},snapshots:{}};
  const before=JSON.stringify(branch.display),timeline=trustedTimeline(branch,messages,chatId);
  // Root is a deliberate new branch base, not a fallback after deleting all messages.
- if(timeline?.key!=='root'){branch.display.heads??={};branch.display.heads[chatId]=timeline?{key:timeline.key,stale:!!timeline.detached,state:clone(timeline.state)}:{key:branch.display.heads[chatId]?.key||'',stale:true};}
+ if(timeline?.key!=='root'){branch.display.heads??={};branch.display.heads[chatId]=timeline?{key:timeline.key,stale:!!timeline.detached,...(Object.hasOwn(branch.currentByChat||{},chatId)?{}:{state:clone(timeline.state)})}:{key:branch.display.heads[chatId]?.key||'',stale:true};}
  const records=branch.display.chats[chatId]||{};
  const last=messages.findLastIndex(message=>message.role==='character');
  // Only an aligned checkpoint can recreate a reply record. Detached latest state
@@ -222,7 +227,7 @@ export function restoreBranchForMessages(branch,messages,chatId){
  Object.assign(branch,{current:state,extra:clone(checkpoint?.extra||branch.baseExtra||{character:[],persona:[]}),history:clone(checkpoint?.history||[]),outfits:clone(checkpoint?.outfits||[]),outfitMemory:clone(checkpoint?.outfitMemory||branch.baseMemory||memoryFromStates([state])),keys:keys.slice(0,start)});
  return state;
 }
-export function saveManualOutfit(branch,people,messages,chatId,limit=1){
+export function saveManualOutfit(branch,people,messages,chatId,limit=1,{compactConfirmed=false}={}){
  const next=ensureContexts({...clone(branch.current),people:clone(people)});
  validateState(next,Object.fromEntries(['character','persona'].map(who=>[who,ownedItems(branch,who)])));
  for(const who of ['character','persona']){
@@ -234,10 +239,11 @@ export function saveManualOutfit(branch,people,messages,chatId,limit=1){
  }
  branch.outfitMemory=updateOutfitMemory(branch.outfitMemory,branch.current,next);branch.current=next;
  branch.keys=prefixKeys(messages);const last=branch.keys.at(-1);
- if(last){
+ if(last&&!compactConfirmed){
   saveCheckpoint(branch,last,{state:clone(next),extra:clone(branch.extra),history:clone(branch.history),outfits:clone(branch.outfits),outfitMemory:clone(branch.outfitMemory)});
- }else{branch.base=clone(next);branch.baseExtra=clone(branch.extra);branch.baseMemory=clone(branch.outfitMemory);}
- branch.display??={chats:{},snapshots:{}};branch.display.heads??={};branch.display.heads[chatId]={key:last||'root',stale:false,state:clone(next)};
+ }else if(!last&&!compactConfirmed){branch.base=clone(next);branch.baseExtra=clone(branch.extra);branch.baseMemory=clone(branch.outfitMemory);}
+ branch.display??={chats:{},snapshots:{}};branch.display.heads??={};branch.display.heads[chatId]={key:last||'root',stale:false};
+ branch.currentByChat=migrateConfirmedOutfits(branch);branch.currentByChat[chatId]={state:clone(next),inputKey:last||'root',outfitMemory:clone(branch.outfitMemory)};
  recordDisplay(branch,chatId,messages,next,limit);
 }
 export function outfitInjection(state){
@@ -346,8 +352,32 @@ export function updateOutfitMemory(previous,before,after,corrections={}){
  }return memory;
 }
 export function memoryFromStates(states){let memory={},before=emptyState();for(const state of states){memory=updateOutfitMemory(memory,before,state);before=state;}return updateOutfitMemory(memory,before,before);}
+export function migrateConfirmedOutfits(branch){
+ const currentByChat={...branch.currentByChat};
+ const heads=branch.display?.heads||{};
+ for(const chatId of branch.links||[]){
+  if(Object.hasOwn(currentByChat,chatId))continue;
+  const head=Object.hasOwn(heads,chatId)?heads[chatId]:undefined;
+  let key=head?.key;
+  let state=head?.state||(key==='root'?branch.base:branch.checkpoints?.[key]?.state);
+  if(!state&&!head){
+   const records=Object.values(branch.display?.chats?.[chatId]||{});
+   const prefixes=new Set(records.map(record=>record.prefix));
+   const match=Object.entries(branch.checkpoints||{}).filter(([prefix,checkpoint])=>prefixes.has(prefix)&&checkpoint.state)
+    .sort((a,b)=>(b[1].order||0)-(a[1].order||0))[0];
+   if(match){key=match[0];state=match[1].state;}
+   else if(branch.links.length===1&&!Object.keys(heads).length&&branch.keys?.length){
+    key=branch.keys.at(-1);
+    state=branch.checkpoints?.[key]?.state||branch.current;
+   }
+  }
+  const outfitMemory=branch.checkpoints?.[key]?.outfitMemory;
+  if(state)Object.defineProperty(currentByChat,chatId,{value:{state:ensureContexts(clone(state)),inputKey:key||'root',...(outfitMemory?{outfitMemory:clone(outfitMemory)}:{})},enumerable:true,writable:true,configurable:true});
+ }
+ return currentByChat;
+}
 export class Store {
- constructor(storage){this.storage=storage;this.epoch=0;this.data=this.load();}
+ constructor(storage,{compactConfirmed=false}={}){this.storage=storage;this.compactConfirmed=compactConfirmed;this.epoch=0;this.data=this.load();}
  load(){
   const raw=this.storage.getItem(KEY);if(!raw)return {version:1,settings:clone(DEFAULTS),characters:{}};
   try{
@@ -361,12 +391,32 @@ export class Store {
    for(const character of Object.values(d.characters))for(const branch of Object.values(character.branches||{})){
     for(const state of [branch.base,branch.current,...(branch.history||[])])ensureContexts(state);
     for(const cp of Object.values(branch.checkpoints||{})){ensureContexts(cp.state);for(const state of cp.history||[])ensureContexts(state);}
+    const migrated=migrateConfirmedOutfits(branch);
+    if(Object.keys(migrated).length)branch.currentByChat=migrated;
     branch.display??={chats:{},snapshots:{}};trimDisplay(branch,d.settings.displayLimit);
    }
    return d;
   }catch{throw Error('저장 데이터가 손상되었습니다. 데이터 관리에서 초기화하세요.');}
  }
- save(){try{this.storage.setItem(KEY,JSON.stringify(this.data));}catch(error){this.invalidate();this.data=this.load();throw Error('저장 공간이 부족하거나 저장할 수 없습니다. 데이터 관리에서 정리하세요.',{cause:error});}}
+ save(){
+  try{
+   const data=this.compactConfirmed?clone(this.data):this.data;
+   if(this.compactConfirmed)for(const character of Object.values(data.characters))for(const branch of Object.values(character.branches||{})){
+    const confirmed=migrateConfirmedOutfits(branch);
+    if(!branch.links?.length||!branch.links.every(chat=>Object.hasOwn(confirmed,chat)))continue;
+    branch.currentByChat=confirmed;
+    // Keep stock referenced by a legacy checkpoint even when its outfit history is discarded.
+    for(const who of ['character','persona']){
+     const stock=new Map((branch.extra?.[who]||[]).map(item=>[item.id,item]));
+     for(const {inputKey} of Object.values(confirmed))for(const item of branch.checkpoints?.[inputKey]?.extra?.[who]||[])if(!stock.has(item.id))stock.set(item.id,item);
+     branch.extra??={};branch.extra[who]=[...stock.values()];
+    }
+    branch.checkpoints={};branch.history=[];branch.outfits=[];
+    for(const head of Object.values(branch.display?.heads||{}))delete head.state;
+   }
+   this.storage.setItem(KEY,JSON.stringify(data));
+  }catch(error){this.invalidate();this.data=this.load();throw Error('저장 공간이 부족하거나 저장할 수 없습니다. 데이터 관리에서 정리하세요.',{cause:error});}
+ }
  invalidate(){this.epoch++;}
  character(id){return this.data.characters[id];}
  createCharacter(id,name){this.data.characters[id]??={name,profiles:{},branches:{}};this.save();return this.character(id);}
@@ -494,11 +544,12 @@ export class Engine {
   if(trace&&changed&&trace.decision!=='partial')trace.decision='applied';
   const nextMemory=updateOutfitMemory(memory,baseline,state,corrections);
   for(const who of ['character','persona']){const merged=new Map(extra[who].map(i=>[i.id,i]));for(const item of added[who])merged.set(item.id,item);extra[who]=[...merged.values()];}
-  if(changed){history.push(clone(baseline));history=history.slice(-5);const outfit=outfitText(state);if(outfit&&outfits.at(-1)!==outfit)outfits.push(outfit);outfits=outfits.slice(-10);}
+  if(changed&&!this.store.compactConfirmed){history.push(clone(baseline));history=history.slice(-5);const outfit=outfitText(state);if(outfit&&outfits.at(-1)!==outfit)outfits.push(outfit);outfits=outfits.slice(-10);}
   trace?.event('apply',changed?'착장 변경 적용':'확인된 착장 유지',{people:state.people,changed});
   Object.assign(b,{current:state,keys,extra,history,outfits,outfitMemory:nextMemory});
-  saveCheckpoint(b,key,{state:clone(state),extra:clone(extra),history:clone(history),outfits:clone(outfits),outfitMemory:clone(nextMemory)});
-  if(chatId){b.display??={chats:{},snapshots:{}};b.display.heads??={};b.display.heads[chatId]={key,stale:false,state:clone(state)};}
+  if(!this.store.compactConfirmed)saveCheckpoint(b,key,{state:clone(state),extra:clone(extra),history:clone(history),outfits:clone(outfits),outfitMemory:clone(nextMemory)});
+  if(chatId){b.display??={chats:{},snapshots:{}};b.display.heads??={};b.display.heads[chatId]={key,stale:false};}
+  if(chatId){b.currentByChat=migrateConfirmedOutfits(b);b.currentByChat[chatId]={state:clone(state),inputKey:key,outfitMemory:clone(nextMemory)};}
   const displayChat=chatId||b.links[0],recordsBefore=Object.keys(b.display?.chats?.[displayChat]||{}).length;
   recordDisplay(b,displayChat,messages,state,recordLimit);this.store.save();
   trace?.event('storage','착장 저장 요청 · 보관 한도 적용',{chatId:displayChat,displayLimit:this.store.data.settings.displayLimit,recordsBefore,recordsAfter:Object.keys(b.display?.chats?.[displayChat]||{}).length,latestCheckpoint:!!b.checkpoints[key],people:Object.fromEntries(['character','persona'].map(who=>[who,{outfitStatus:state.people[who].outfitStatus,items:state.people[who].items.length,nude:state.people[who].nude}]))});

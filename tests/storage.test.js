@@ -6,6 +6,20 @@ import {visibleBounds,clampMascot,restoreMascot,rememberMascot} from '../mascot-
 import {sanitizeSavedOutputs} from '../output-guard.js';
 
 const memory=()=>{const map=new Map();return {getItem:k=>map.get(k)??null,setItem:(k,v)=>map.set(k,v),removeItem:k=>map.delete(k)};};
+test('서버 저장용 이전은 방마다 확정 상태를 보존하고 과거 기록을 제거한다',()=>{
+ const storage=memory(),store=new Store(storage,{compactConfirmed:true});
+ const state=nude=>({scene:{},people:{character:{nude,items:[]},persona:{nude:false,items:[]}}});
+ store.data.characters.c={branches:{b:{links:['a','b'],base:state(false),current:state(true),keys:['old-a'],history:[state(false)],outfits:['old'],extra:{character:[],persona:[]},
+  display:{chats:{},snapshots:{},heads:{a:{key:'old-a'},b:{key:'old-b'}}},
+  checkpoints:{'old-a':{state:state(true)},'old-b':{state:state(false)}}}}};
+ store.save();
+ const persisted=JSON.parse(storage.getItem(KEY)).characters.c.branches.b;
+ assert.deepEqual(persisted.checkpoints,{});
+ assert.deepEqual(persisted.history,[]);
+ const restored=new Store(storage,{compactConfirmed:true}).data.characters.c.branches.b.currentByChat;
+ assert.equal(restored.a.state.people.character.nude,true);
+ assert.equal(restored.b.state.people.character.nude,false);
+});
 function server(){
  const s={files:new Map(),uploads:0,writes:[],deletes:[],fail:false,readsFail:false,failFile:null,failDelete:false};
  Object.defineProperty(s,'record',{get:()=>s.files.get(FILE_NAME)||null,set:record=>{if(record)s.files.set(FILE_NAME,record);else s.files.delete(FILE_NAME);}});

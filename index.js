@@ -1,8 +1,8 @@
 import {getContext} from '../../../extensions.js';
 import {ConnectionManagerRequestService} from '../../shared.js';
 import * as worldInfo from '../../../world-info.js';
-import {Store,Engine,DiagnosticLog,normalizeProfile,clone,prefixKeys,outfitInjection,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,saveCheckpoint,memoryFromStates,hash,compactStoredData,reconcileDisplay,trimDisplay,trustedTimeline} from './core.js';
-import {ANALYSIS,SCENE,OUTFIT_ITEMS,WARDROBE_FILL,WARDROBE_REBUILD,WARDROBE_LABELS} from './prompts.js';
+import {Store,Engine,DiagnosticLog,normalizeProfile,clone,prefixKeys,outfitPrompt,savedOutfitForMessages,savedDisplay,pruneDisplayChat,restoreBranchForMessages,saveManualOutfit,saveCheckpoint,memoryFromStates,hash,compactStoredData,reconcileDisplay,trustedTimeline} from './core.js';
+import {ANALYSIS,SCENE,INTERVENTION,OUTFIT_ITEMS,WARDROBE_FILL,WARDROBE_REBUILD,WARDROBE_LABELS} from './prompts.js';
 import {createHost,injectPayload,registerOutfitMacro} from './host.js';
 import {createUI} from './ui.js';
 import {translateReport} from './profile-report.js';
@@ -32,10 +32,10 @@ function startTask(label,{notify=true}={}){
 function finishTask(controller){if(analysisController!==controller)return;controller.trace?.finish('completed','작업·서버 저장 완료');analysisController=null;backgroundTask='';ui.toast(false);ui.refresh();if(deferredRead)schedule();}
 const current=()=>{const i=host.identity();if(!i)return null;const pair=store.find(i.id,i.chat);return pair?{i,bid:pair[0],b:pair[1]}:null;};
 const sameIdentity=expected=>{const actual=host.identity();return !!expected&&actual?.id===expected.id&&actual.chat===expected.chat&&actual.personaKey===expected.personaKey;};
-const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcile&&reconcileDisplay(v.b,v.i.chat,messages,settings().displayLimit);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
+const restoreActive=(reconcile=true)=>{const v=current();if(!v)return;const messages=host.messages();const changed=reconcile&&reconcileDisplay(v.b,v.i.chat,messages,1);restoreBranchForMessages(v.b,messages,v.i.chat);if(changed)store.save();};
 const state=()=>{const v=current(),timeline=v&&trustedTimeline(v.b,host.messages(),v.i.chat);return {identity:host.identity(),character:host.identity()?store.character(host.identity().id):null,branch:v?.b,bid:v?.bid,outfitReady:!!timeline,outfitDetached:!!timeline?.detached,settings:settings(),injectionError,pending:pending||!!manualRead,generating,backgroundTask,storageStatus:storage.status,storageCharacterFile:storage.characterPath(host.identity()?.id),legacyAvailable:storage.legacyAvailable};};
 async function read(chat=host.context().chat,force=false){
- const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,displayLimit:settings().displayLimit,newItems:settings().newItems,profileId:settings().profileId});
+ const expected=host.identity(),intent=readId,trace=logs.start('scene',{...logScope(),trigger:force?'manual':'auto',turns:settings().chatTurns,newItems:settings().newItems,profileId:settings().profileId});
  try{await storage.pull();}catch(error){trace.fail(error,'storage-pull');throw error;}
  if(intent!==readId||!sameIdentity(expected)||chat!==host.context().chat||(!force&&generationStopped)){trace.finish('cancelled','서버 확인 중 판독 취소');return null;}
  const v=current();if(!settings().enabled||!v||v.b.suspended){trace.finish('skipped','비활성 또는 연결된 브랜치 없음');return v?.b.current||null;}
@@ -48,7 +48,7 @@ async function read(chat=host.context().chat,force=false){
  const promise=(async()=>{
   try{
    if(!messages.length){engine.cancel();restoreActive();return v.b.current;}
-   return await engine.read(v.i.id,v.bid,messages,{force,gate:true,system:SCENE,profileId:settings().profileId,chatId:v.i.chat,trace,names:{character:v.i.name,persona:v.i.userName},isCurrent:()=>sameIdentity(v.i)&&current()?.b===v.b&&(prefixKeys(host.messages()).at(-1)||'root')===messageKey,onRequest:()=>{pending=true;ui.toast(true);ui.refresh();}});
+   return await engine.read(v.i.id,v.bid,messages,{recordLimit:1,force,gate:false,system:SCENE,profileId:settings().profileId,chatId:v.i.chat,trace,names:{character:v.i.name,persona:v.i.userName},isCurrent:()=>sameIdentity(v.i)&&current()?.b===v.b&&(prefixKeys(host.messages()).at(-1)||'root')===messageKey,onRequest:()=>{pending=true;ui.toast(true);ui.refresh();}});
   }catch(error){trace.fail(error,'read');throw error;}finally{try{await storage.flush();trace.finish(trace.decision||'unchanged','판독·서버 저장 완료');}catch(error){trace.fail(error,'storage');throw error;}finally{if(id===readId){runningRead=null;pending=false;ui.toast(false);ui.refresh();}}}
  })();
  runningRead={id,key,messageKey,promise,trace};return promise;
@@ -172,7 +172,7 @@ async function cleanup(){
  const controller=startTask('불필요한 데이터 정리 중',{notify:false}),context=host.context(),identity=host.identity(),chat=context.chat;
  try{
   const result=await storage.cleanup();if(controller.signal.aborted)return {cancelled:true};
-  const displayRemoved=current()?pruneDisplayChat(current().b,current().i.chat,host.context().chat,settings().displayLimit):0;
+  const displayRemoved=current()?pruneDisplayChat(current().b,current().i.chat,host.context().chat,1):0;
   const compact=compactStoredData(store.data);if(compact.total||displayRemoved){store.data=compact.data;store.save();await storage.flush();}
   if(controller.signal.aborted)return {cancelled:true};
   const sameChat=host.context().chat===chat&&host.identity()?.id===identity?.id&&host.identity()?.chat===identity?.chat;
@@ -207,11 +207,25 @@ async function newBranch(mode,name,bid){
 const ui=createUI({base:new URL('.',import.meta.url),state,refreshViews:()=>messageView?.refresh(),profiles:()=>host.profiles(),sheet:kind=>host.sheet(kind),lore:kind=>host.lore(kind),analyze,refillWardrobe,read:readCurrent,newBranch,
  logs,logError:error=>logs.error(error,logScope()),flush:()=>storage.flush(),retryStorage:()=>storage.retry(),importLegacy:()=>storage.importLegacy(),cleanup,
  translateProfile,
+ async intervene(requests){
+  if(!settings().enabled)throw Error('설정에서 사용함을 켜세요.');
+  const expected=host.identity();await storage.pull();
+  const v=current();if(!v||!sameIdentity(expected)||v.b.suspended||v.b.personaKey&&v.b.personaKey!==v.i.personaKey)throw Error('현재 채팅의 착장 브랜치를 확인하세요.');
+  if(generating||analysisController)throw Error('진행 중인 작업이 끝난 뒤 다시 시도하세요.');
+  const messages=host.messages(),key=prefixKeys(messages).at(-1);
+  if(!key)throw Error('현재 채팅에 먼저 답변이 필요해요.');
+  const controller=startTask('참견한 착장 적용');
+  try{
+   const result=await engine.read(v.i.id,v.bid,messages,{recordLimit:1,force:true,system:INTERVENTION,intervention:requests,chatId:v.i.chat,profileId:settings().profileId,trace:controller.trace,isCurrent:()=>!controller.signal.aborted&&sameIdentity(v.i)&&current()?.b===v.b&&prefixKeys(host.messages()).at(-1)===key});
+   await storage.flush();return result;
+  }catch(error){controller.trace?.fail(error,'intervention');throw error;}
+  finally{finishTask(controller);}
+ },
  saveReportTranslation(who,source,translated,language){const v=current();if(!v||hash(JSON.stringify(v.b.profiles[who]?.fields))!==hash(JSON.stringify(source.fields)))return;v.b.reportTranslations??={};if(translated)v.b.reportTranslations[who]={signature:hash(JSON.stringify(source.fields)),fields:Object.fromEntries(Object.entries(translated.fields).map(([key,field])=>[key,{value:field.value,evidence:field.evidence}])),language};else if(v.b.reportTranslations[who])v.b.reportTranslations[who].language=language;store.save();},
- updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked','profileId','displayMode','displayLimit','brands'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);if(Object.hasOwn(patch,'displayLimit')){for(const character of Object.values(store.data.characters))for(const branch of Object.values(character.branches))trimDisplay(branch,settings().displayLimit);restoreActive();}store.save();ui.refresh();},
+ updateSettings(patch){if(Object.keys(patch).some(key=>!['mascot','mascotPosition','mascotPositions','mascotLocked','profileId','displayMode','brands'].includes(key)))cancel();if(patch.enabled)outputGuard.install?.();Object.assign(settings(),patch);store.save();ui.refresh();},
  saveProfiles(profiles){cancel();const v=current();if(!v)return;v.b.profiles=profiles;for(const who of ['character','persona'])if(v.b.reportTranslations?.[who]?.signature!==hash(JSON.stringify(profiles[who]?.fields)))delete v.b.reportTranslations?.[who];store.save();ui.refresh();},
  promote(){const v=current();if(!v)return;store.character(v.i.id).profiles=clone(v.b.profiles);store.character(v.i.id).personaKey=v.b.personaKey;store.save();},
- saveOutfit(people){cancel();const v=current();if(!v)return;saveManualOutfit(v.b,people,host.messages(),v.i.chat,settings().displayLimit);store.save();ui.refresh();},
+ saveOutfit(people){cancel();const v=current();if(!v)return;saveManualOutfit(v.b,people,host.messages(),v.i.chat,1);store.save();ui.refresh();},
  async testConnection(profileId=settings().profileId){return host.request(profileId,'Return only {"ok":true}.',{},new AbortController().signal,'test').then(x=>{if(x.ok!==true)throw Error('연결 확인 응답이 잘못되었습니다.');});},
  remove(kind,bid){cancel();const i=host.identity();if(kind==='all'){store.deleteAll();outputGuard.remove();}else if(i){if(kind==='chat')store.resetChat(i.id,i.chat);if(kind==='branch')store.deleteBranch(i.id,bid||current()?.bid);if(kind==='character')store.deleteCharacter(i.id);}ui.refresh();},
 });
@@ -230,9 +244,9 @@ globalThis.kikkiClosetInterceptor=(_chat,_size,abort,type)=>{
  let messages=host.messages();
  if(['swipe','regenerate'].includes(type)&&messages.at(-1)?.role==='character')messages=messages.slice(0,-1);
  const snapshot=savedOutfitForMessages(v.b,messages,v.i.chat);
- prepared={revision,character:v.i.id,chat:v.i.chat,type,key:prefixKeys(messages).at(-1)||'root',content:outfitInjection(snapshot)};
+ prepared={revision,character:v.i.id,chat:v.i.chat,type,key:prefixKeys(messages).at(-1)||'root',content:outfitPrompt(snapshot)};
 };
-await registerOutfitMacro(getContext,()=>{const v=current();return settings().enabled&&v&&!v.b.suspended&&(!v.b.personaKey||v.b.personaKey===v.i.personaKey)?outfitInjection(savedOutfitForMessages(v.b,host.messages(),v.i.chat)):null;});
+await registerOutfitMacro(getContext,()=>{const v=current();return settings().enabled&&v&&!v.b.suspended&&(!v.b.personaKey||v.b.personaKey===v.i.personaKey)?outfitPrompt(savedOutfitForMessages(v.b,host.messages(),v.i.chat)):null;});
 const {eventSource,eventTypes}=host.context();
 for(const key of ['CONNECTION_PROFILE_CREATED','CONNECTION_PROFILE_UPDATED','CONNECTION_PROFILE_DELETED'])if(eventTypes[key])eventSource.on(eventTypes[key],()=>ui.refreshConnectionProfiles());
 window.addEventListener('focus',()=>ui.refreshConnectionProfiles());

@@ -91,7 +91,7 @@ await page.evaluate(async()=>{TEST_CONTEXT.chat[3].mes='그는 코트를 걸치�
 await page.waitForFunction(count=>calls.length===count+1,beforeStreaming);await page.waitForTimeout(400);assert.equal(await page.evaluate(()=>calls.length),beforeStreaming+1);
 const beforeQuiet=await page.evaluate(()=>calls.length);
 await page.evaluate(async()=>{TEST_CONTEXT.chat.push({send_date:'4',is_user:false,mes:'그는 미소 지으며 고개를 끄덕였다.'});await TEST_CONTEXT.eventSource.emit('MESSAGE_RECEIVED',4);await TEST_CONTEXT.eventSource.emit('GENERATION_ENDED');});
-await page.waitForTimeout(450);assert.equal(await page.evaluate(()=>calls.length),beforeQuiet);
+await page.waitForFunction(count=>calls.length===count+1,beforeQuiet);
 // Dismissing the toast does not cancel work or start another request.
 await page.evaluate(()=>{window.modelWait=true;window.nextScene={scene:{place:'Home'},sceneKo:{place:'집'},changes:{character:{actions:[{op:'wear',category:'footwear',name:'canvas sneakers'}]}}};});
 await page.locator('[data-action="read"]').click();await page.locator('.kc-toast').waitFor({state:'visible'});const toastBox=await page.locator('.kc-toast').boundingBox();assert.ok(toastBox.y>600);await page.locator('.kc-toast').click();assert.equal(await page.locator('.kc-toast').count(),0);
@@ -198,26 +198,21 @@ assert.equal(await page.evaluate(()=>TEST_CONTEXT.chat.at(-1).mes),originalStory
 
 // Bounded records: unchanged replies still get a memo; reload restores only recent N without a model call.
 await page.locator('.kc-open').click();await page.locator('[data-action="settings"]').click();
-assert.match(await page.locator('[name="chatTurns"]').locator('..').innerText(),/최대 50턴/);assert.match(await page.locator('[name="displayLimit"]').locator('..').innerText(),/최대 20개/);
+assert.match(await page.locator('[name="chatTurns"]').locator('..').innerText(),/최대 50턴/);assert.equal(await page.locator('[name="displayLimit"]').count(),0);
 await page.locator('[name="chatTurns"]').fill('100');await page.locator('[name="chatTurns"]').dispatchEvent('change');await saved();assert.equal(await page.locator('[name="chatTurns"]').inputValue(),'50');assert.equal(stored().data.settings.chatTurns,50);
 await page.locator('[name="chatTurns"]').fill('2');await page.locator('[name="chatTurns"]').dispatchEvent('change');await saved();
-await page.locator('[name="displayLimit"]').fill('100');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();assert.equal(await page.locator('[name="displayLimit"]').inputValue(),'20');assert.equal(stored().data.settings.displayLimit,20);
-await page.locator('[name="displayLimit"]').fill('4');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();assert.equal(stored().data.settings.displayLimit,4);
-await page.locator('[name="displayLimit"]').fill('1');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();
-assert.equal(await page.locator('[name="displayLimit"]').inputValue(),'1');
-await page.locator('[name="displayLimit"]').fill('3');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();await page.locator('[data-action="sub-close"]').click();
+await page.locator('[name="auto"]').uncheck();await saved();await page.locator('[data-action="sub-close"]').click();
 const beforeRetention=await page.evaluate(()=>calls.length);
 for(let i=0;i<3;i++){
  await page.evaluate(async n=>{TEST_CONTEXT.chat.push({send_date:'retention-'+n,is_user:false,name:'서윤',mes:'He smiles quietly.'});await TEST_CONTEXT.eventSource.emit('MESSAGE_RECEIVED');},i);
- await page.waitForFunction(n=>document.querySelectorAll('.kc-inline-card .kc-inline-people').length===Math.min(n+2,3)&&![...document.querySelectorAll('.kc-inline-card')].at(-1)?.textContent.includes('새 답변 판독 전'),i);await saved();
+ await page.waitForFunction(n=>document.querySelectorAll('.kc-inline-card .kc-inline-people').length===1);await saved();
 }
-assert.equal(await page.locator('.kc-inline-card').count(),3);assert.equal(await page.evaluate(()=>calls.length),beforeRetention);
-const retentionBranch=Object.values(stored().data.characters['c.png'].branches)[0];assert.equal(Object.keys(retentionBranch.display.chats['chat-a']).length,3);assert.equal(Object.keys(retentionBranch.display.snapshots).length,1);
+assert.equal(await page.locator('.kc-inline-card').count(),1);assert.equal(await page.evaluate(()=>calls.length),beforeRetention);
 const savedChat=await page.evaluate(()=>TEST_CONTEXT.chat),reloadPage=await browser.newPage({viewport:{width:360,height:780}});
 reloadPage.on('pageerror',e=>errors.push(e.message));
 await reloadPage.route('http://127.0.0.1:'+server.address().port+'/',route=>route.fulfill({contentType:'text/html',body:fixture.replace('window.SERVICE=','TEST_CONTEXT.chat='+JSON.stringify(savedChat)+';renderChat();window.SERVICE=')}));
-await reloadPage.goto('http://127.0.0.1:'+server.address().port+'/');await reloadPage.waitForFunction(()=>document.querySelectorAll('.kc-inline-card .kc-inline-people').length===3);
-assert.equal(await reloadPage.evaluate(()=>calls.length),0);assert.equal(await reloadPage.locator('.kc-inline-card').count(),3);await reloadPage.close();
+await reloadPage.goto('http://127.0.0.1:'+server.address().port+'/');await reloadPage.waitForFunction(()=>document.querySelectorAll('.kc-inline-card .kc-inline-people').length===1);
+assert.equal(await reloadPage.evaluate(()=>calls.length),0);assert.equal(await reloadPage.locator('.kc-inline-card').count(),1);await reloadPage.close();
 // Repeated swipes keep the last confirmed clothes even when every reply memo is invalidated.
 const retentionBid=Object.keys(stored().data.characters['c.png'].branches)[0],confirmedBeforeRerolls=structuredClone(stored().data.characters['c.png'].branches[retentionBid].current),rerollCalls=await page.evaluate(()=>calls.length);
 for(let n=1;n<=10;n++){
@@ -229,12 +224,9 @@ const rerollChat=await page.evaluate(()=>TEST_CONTEXT.chat),rerollReload=await b
 await rerollReload.route('http://127.0.0.1:'+server.address().port+'/',route=>route.fulfill({contentType:'text/html',body:fixture.replace('window.SERVICE=','TEST_CONTEXT.chat='+JSON.stringify(rerollChat)+';renderChat();window.SERVICE=')}));
 await rerollReload.goto('http://127.0.0.1:'+server.address().port+'/');await rerollReload.waitForFunction(()=>[...document.querySelectorAll('.kc-inline-card')].at(-1)?.textContent.includes('마지막 확인 착장'));
 assert.equal(await rerollReload.evaluate(()=>calls.length),0);await rerollReload.close();
-await page.locator('[data-action="settings"]').click();await page.locator('[name="displayLimit"]').fill('1');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();
-await page.waitForFunction(()=>document.querySelectorAll('.kc-inline-card').length===1);
-assert.equal(Object.keys(Object.values(stored().data.characters['c.png'].branches)[0].display.chats['chat-a']).length,1);
-await page.locator('[name="displayLimit"]').fill('3');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();await page.waitForFunction(()=>document.querySelectorAll('.kc-inline-card').length===2);
-await page.locator('[name="displayLimit"]').fill('1');await page.locator('[name="displayLimit"]').dispatchEvent('change');await saved();await page.locator('[data-action="sub-close"]').click();
-assert.equal(await page.evaluate(()=>calls.length),beforeRetention);await page.locator('[data-action="close"]').click();
+assert.equal(await page.evaluate(()=>calls.length),beforeRetention);
+await page.locator('[data-action="settings"]').click();await page.locator('[name="auto"]').check();await saved();await page.locator('[data-action="sub-close"]').click();
+await page.locator('[data-action="close"]').click();
 await page.locator('.kc-open').click();await page.locator('[data-action="settings"]').click();await page.locator('[name="displayMode"]').selectOption('floating');await saved();await page.locator('[data-action="sub-close"]').click();
 await page.locator('.kc-inline-card').waitFor({state:'detached'});assert.equal(await page.locator('.kc-mascot').isVisible(),true);await page.setViewportSize({width:360,height:780});
 

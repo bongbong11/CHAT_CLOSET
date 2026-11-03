@@ -1,4 +1,4 @@
-import {CATEGORIES,outfitEmptyLabel,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabel,itemUiBrand,koreanDisplay,hash,displayLimit} from './core.js';
+import {CATEGORIES,outfitEmptyLabel,visibleMessages,prefixKeys,savedDisplay,displayKey,itemUiLabel,itemUiBrand,koreanDisplay,hash} from './core.js';
 import {WEATHER_LABELS} from './scene-gate.js';
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -33,7 +33,7 @@ export function createMessageOutfits(api){
   const source=api.context().chat,messages=visibleMessages(source),prefixes=prefixKeys(messages),byIndex=new Map();let visible=0;
   source.forEach((message,index)=>{if(!message.is_system&&!message.is_hidden&&!message.extra?.is_hidden){byIndex.set(index,{message:messages[visible],prefix:prefixes[visible]});visible++;}});
   const eligible=[...byIndex].filter(([,entry])=>entry.message.role==='character').map(([index])=>index),latest=eligible.at(-1);
-  const kept=new Set(eligible.filter(index=>{const entry=byIndex.get(index);return index===latest||savedDisplay(state.branch,identity.chat,entry.message,entry.prefix);}).slice(-displayLimit(state.settings.displayLimit)));
+  const kept=new Set(latest===undefined?[]:[latest]);
   const localKeys=new Set([...kept].map(index=>displayKey(byIndex.get(index).message)));
   for(const key of local.keys())if(!localKeys.has(key))local.delete(key);
   for(const node of chat.querySelectorAll('.mes[mesid]')){

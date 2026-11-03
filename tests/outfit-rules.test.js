@@ -1,6 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Store,Engine,KEY,emptyState,recordDisplay,savedDisplay,pruneDisplayChat,prefixKeys,compactStoredData,updateOutfitMemory,restoreBranchForMessages,saveManualOutfit,savedOutfitForMessages,outfitInjection,reconcileDisplay,trustedTimeline,trimDisplay,displayLimit,visibleMessages} from '../core.js';
+
+test('확정 착장은 과거 답변 체크포인트와 무관하게 채팅별로 유지된다',()=>{
+ const state=emptyState();state.people.character.nude=true;
+ const branch={display:{heads:{a:{key:'old',state}},chats:{},snapshots:{}},checkpoints:{},links:['a','b']};
+ assert.equal(trustedTimeline(branch,[],'a').detached,true);
+ assert.equal(restoreBranchForMessages(branch,[],'a').people.character.nude,true);
+ assert.equal(restoreBranchForMessages(branch,[],'b').people.character.nude,false);
+});
+
+test('활동 요구는 필요한 슬롯만 추가하고 완료 상태는 다음 판독에서 만료된다',()=>{
+ const baseline=emptyState();
+ const raw={changes:{character:{context:{location:'home',phase:'resting',activity:{name:'exercise',stage:'completed',requirements:[{category:'footwear',fit:['flat']}]}}}}};
+ const facts=normalizeSceneResponse(raw).facts;
+ assert.deepEqual(facts.changes.character.context.activity.requirements,[{category:'신발',fit:['flat']}]);
+ const result=resolveOutfit(baseline,facts,{character:[],persona:[]});
+ assert.ok(result.missing.some(item=>item.reason==='activity'&&item.category==='신발'));
+ const following=resolveOutfit(result.state,{changes:{}},{character:[],persona:[]});
+ assert.equal(following.state.people.character.context.activity,undefined);
+});
 import {needsOutfitRead} from '../scene-gate.js';
 import {registerOutfitMacro,injectPayload} from '../host.js';
 import {requireEnglishProfile,toModelData} from '../model-schema.js';
